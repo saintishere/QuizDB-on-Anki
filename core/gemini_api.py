@@ -5,21 +5,21 @@ import json
 import time
 import re
 import traceback
-import os # Added for os.path.basename
+import os # Added for os.path.basename, path.join
 from tkinter import messagebox # For showing API errors directly if needed
+import math # For calculating text chunks
 
 # Use relative imports
 try:
     from ..constants import GEMINI_SAFETY_SETTINGS
-    from ..utils.helpers import ProcessingError # Use custom exception
+    from ..utils.helpers import ProcessingError, sanitize_filename # Use custom exception, add sanitize_filename
 except ImportError:
     # Fallback for direct execution or different structure
     from constants import GEMINI_SAFETY_SETTINGS
-    from utils.helpers import ProcessingError
+    from utils.helpers import ProcessingError, sanitize_filename
 
 # --- Configuration ---
 # Configure initially with a dummy key. The actual key will be set by configure_gemini.
-# This prevents errors if the module is imported before the key is available.
 try:
     genai.configure(api_key="dummy")
 except Exception as e:
@@ -33,16 +33,14 @@ def configure_gemini(api_key):
         return False
     try:
         genai.configure(api_key=api_key)
-        print("Gemini API configured successfully.")
+        # print("Gemini API configured successfully.") # Make less verbose
         return True
     except Exception as e:
         print(f"Error configuring Gemini: {e}")
-        # Optionally show a message box here or let the caller handle it
         return False
 
 def parse_batch_tag_response(response_text, batch_size):
     """Parses Gemini's numbered list response to extract tags."""
-    # (Copied directly from AnkiTagProcessor14.py - no changes needed)
     tags_list = [f"ERROR: No Response Parsed" for _ in range(batch_size)]
     lines = response_text.strip().split('\n')
     parsed_count = 0
@@ -67,18 +65,42 @@ def parse_batch_tag_response(response_text, batch_size):
               if tags_list[i] == "ERROR: No Response Parsed": tags_list[i] = "ERROR: Parsing Mismatch"
     return tags_list
 
+# --- NEW Helper for Incremental Saving ---
+def save_json_incrementally(data_list, output_dir, base_filename, step_name, log_func):
+    """Saves the current list of parsed JSON objects to a temporary file."""
+    if not data_list:
+        return None # Don't save if empty
 
+    temp_filename = f"{base_filename}_{step_name}_temp_results.json"
+    temp_filepath = os.path.join(output_dir, temp_filename)
+    try:
+        with open(temp_filepath, 'w', encoding='utf-8') as f:
+            json.dump(data_list, f, indent=2) # Save as a standard JSON array
+        log_func(f"Saved intermediate {step_name} results ({len(data_list)} items) to {temp_filename}", "debug")
+        return temp_filepath
+    except Exception as e:
+        log_func(f"Error saving intermediate {step_name} results to {temp_filepath}: {e}", "error")
+        return None
+
+# --- Modified Visual Extraction ---
 def call_gemini_visual_extraction(pdf_path, api_key, model_name, prompt_text, log_func, parent_widget=None):
-    """Calls Gemini with PDF expecting JSON output. Returns (parsed_data, uploaded_file_uri) or (None, uri)."""
-    log_func("Calling Gemini for JSON extraction...", "info")
+    """
+    Calls Gemini with PDF expecting JSON output.
+    Implements robust parsing and incremental saving of the single response.
+    Returns (list_of_parsed_objects, uploaded_file_uri) or (None, uri).
+    """
+    log_func("Calling Gemini for Visual JSON extraction...", "info")
     if not configure_gemini(api_key):
         messagebox.showerror("API Error", "Failed to configure Gemini API key.", parent=parent_widget)
         return None, None
 
     uploaded_file = None
     uploaded_file_uri = None
-    parsed_data = None
+    all_parsed_objects = [] # Store successfully parsed objects here
     block_reason = None
+    output_dir = os.path.dirname(pdf_path) or os.getcwd()
+    safe_base_name = sanitize_filename(os.path.basename(pdf_path))
+    temp_save_path = None # Track path to incrementally saved results
 
     generation_config = genai.GenerationConfig(
         response_mime_type="application/json"
@@ -87,10 +109,9 @@ def call_gemini_visual_extraction(pdf_path, api_key, model_name, prompt_text, lo
     try:
         log_func(f"Uploading PDF '{os.path.basename(pdf_path)}'...", "upload")
         upload_start_time = time.time()
-        # Use a display name for easier identification in Google AI Studio
         display_name = f"visual-extract-{os.path.basename(pdf_path)}-{time.time()}"
         uploaded_file = genai.upload_file(path=pdf_path, display_name=display_name)
-        uploaded_file_uri = uploaded_file.name # Use the unique name/URI
+        uploaded_file_uri = uploaded_file.name
         upload_duration = time.time() - upload_start_time
         log_func(f"PDF uploaded successfully ({upload_duration:.1f}s). URI: {uploaded_file_uri}", "info")
 
@@ -108,143 +129,78 @@ def call_gemini_visual_extraction(pdf_path, api_key, model_name, prompt_text, lo
         # --- Process Response ---
         json_string = None
         try:
-            # With JSON mime type, the response text should be the JSON
             json_string = response.text
             log_func(f"Attempting to parse JSON response (length {len(json_string) if json_string else 0})...", "debug")
             if json_string:
                 log_func(f"JSON Snippet:\n---\n{json_string[:500]}\n---", "debug")
-                parsed_data = json.loads(json_string)
-                log_func("Successfully parsed JSON response.", "info")
-                if not isinstance(parsed_data, list):
-                     log_func("Parsing Error: Parsed JSON is not a list.", "error")
-                     parsed_data = None # Mark as failed
+
+                # --- Robust Parsing and Incremental Saving ---
+                # Attempt to parse the whole string first
+                try:
+                    parsed_data = json.loads(json_string)
+                    if isinstance(parsed_data, list):
+                        all_parsed_objects = parsed_data # Store all if successful
+                        log_func(f"Successfully parsed entire JSON response ({len(all_parsed_objects)} items).", "info")
+                        # Save the complete list
+                        temp_save_path = save_json_incrementally(all_parsed_objects, output_dir, safe_base_name, "visual_extract", log_func)
+                    else:
+                         log_func("Parsing Error: Parsed JSON is not a list.", "error")
+                         all_parsed_objects = None # Mark as failed
+                except json.JSONDecodeError as e:
+                    log_func(f"Initial JSON parsing failed: {e}. Attempting incremental parsing...", "warning")
+                    all_parsed_objects = [] # Reset for incremental
+                    # Find potential JSON objects within the string
+                    # This is a basic attempt, might need refinement
+                    object_matches = re.finditer(r'\{(?:[^{}]|(?R))*\}', json_string)
+                    parsed_count = 0
+                    for match in object_matches:
+                        try:
+                            obj_str = match.group(0)
+                            parsed_obj = json.loads(obj_str)
+                            # Basic validation (check for expected keys maybe?)
+                            if isinstance(parsed_obj, dict) and "question_page" in parsed_obj and "answer_page" in parsed_obj:
+                                all_parsed_objects.append(parsed_obj)
+                                parsed_count += 1
+                                # Save incrementally after each valid object
+                                temp_save_path = save_json_incrementally(all_parsed_objects, output_dir, safe_base_name, "visual_extract", log_func)
+                            else:
+                                log_func(f"Skipping incrementally parsed object (missing keys or not dict): {obj_str[:100]}...", "debug")
+                        except json.JSONDecodeError:
+                            log_func(f"Failed to parse potential object: {obj_str[:100]}...", "debug")
+                        except Exception as inner_e:
+                            log_func(f"Error processing potential object: {inner_e}", "error")
+
+                    if parsed_count > 0:
+                        log_func(f"Incrementally parsed and saved {parsed_count} valid objects.", "info")
+                    else:
+                        log_func("Incremental parsing failed to find any valid objects.", "error")
+                        all_parsed_objects = None # Mark as failed if nothing found
+
             else:
                  log_func("Warning: Received empty response text from Gemini.", "warning")
-                 parsed_data = [] # Empty list for empty response
+                 all_parsed_objects = [] # Empty list for empty response
 
-        except json.JSONDecodeError as e:
-            log_func(f"Parsing Error: Failed to decode JSON: {e}", "error")
-            log_func(f"--- Invalid JSON Received ---\n{getattr(response, 'text', 'N/A')}\n---", "debug")
-            parsed_data = None
         except AttributeError:
              log_func("Parsing Error: Could not access response text (blocked or empty?).", "error")
              log_func(f"Full Response: {response}", "debug")
-             parsed_data = None
+             all_parsed_objects = None
         except Exception as e:
              log_func(f"Unexpected error processing response text: {e}\n{traceback.format_exc()}", "error")
-             parsed_data = None
+             all_parsed_objects = None
 
         # Check blocking reasons (useful even if parsing failed)
         try:
-            # Use genai.types constants if available and preferred
             block_reason_enum = getattr(genai.types, 'BlockReason', None)
             block_reason_unspecified = getattr(block_reason_enum, 'BLOCK_REASON_UNSPECIFIED', 0) if block_reason_enum else 0
-
             if response.prompt_feedback:
                 block_reason = response.prompt_feedback.block_reason
-                if block_reason == block_reason_unspecified:
-                    block_reason = None # Treat unspecified as no block for logic below
-        except ValueError: pass # Handle potential enum issues
-        except Exception as e: log_func(f"Minor error accessing block_reason: {e}", "debug")
-
-        finish_reason_val = None
-        finish_reason_enum = getattr(genai.types, 'FinishReason', None)
-        finish_reason_safety = getattr(finish_reason_enum, 'SAFETY', 3) if finish_reason_enum else 3
-        try:
-            if response.candidates: finish_reason_val = response.candidates[0].finish_reason
-            log_func(f"Gemini finish reason: {finish_reason_val}", "debug")
-        except Exception as e: log_func(f"Minor error accessing finish_reason: {e}", "debug")
-
-        # Use more specific block reason checking if possible
-        if block_reason:
-            # Check if *all* candidates were blocked due to safety
-            all_blocked = finish_reason_val == finish_reason_safety
-            if all_blocked:
-                error_msg = f"Request blocked by API. Reason: {block_reason}"
-                log_func(error_msg, level="error")
-                messagebox.showerror("API Error", error_msg, parent=parent_widget)
-                return None, uploaded_file_uri # Return None for data, but keep URI for cleanup
-            else:
-                log_func(f"Safety block '{block_reason}' present, but finish reason is '{finish_reason_val}'. Proceeding.", level="warning")
-
-        # If parsing failed or returned None earlier, ensure None is returned
-        if parsed_data is None and not block_reason:
-             feedback = "N/A"
-             try: feedback = str(response.prompt_feedback) if response.prompt_feedback else "N/A"
-             except Exception: pass
-             log_func(f"API call finished, but JSON parsing failed/unusable. Finish={finish_reason_val}. Feedback: {feedback}", level="error")
-             return None, uploaded_file_uri
-
-        log_func("Gemini JSON extraction step complete.", "info")
-        # Return the parsed list (can be empty []) or None if errors occurred
-        return parsed_data, uploaded_file_uri
-
-    except google.api_core.exceptions.GoogleAPIError as api_e:
-        error_type = type(api_e).__name__
-        error_message = f"Gemini API Error (Visual): {error_type}: {api_e}"
-        log_func(error_message, level="error")
-        messagebox.showerror("API Error", error_message, parent=parent_widget)
-        return None, uploaded_file_uri # Keep URI if upload succeeded
-    except FileNotFoundError:
-        error_message = f"Input PDF not found: {pdf_path}"
-        log_func(error_message, level="error")
-        messagebox.showerror("File Error", error_message, parent=parent_widget)
-        return None, None
-    except Exception as e:
-        error_message = f"Unexpected error during Gemini visual call: {type(e).__name__}: {e}"
-        log_func(f"FATAL API ERROR (Visual): {error_message}\n{traceback.format_exc()}", level="error")
-        messagebox.showerror("Unexpected Error", error_message, parent=parent_widget)
-        return None, uploaded_file_uri # Keep URI if upload might have succeeded
-
-def call_gemini_text_analysis(text_content, api_key, model_name, prompt, log_func, parent_widget=None):
-    """Calls Gemini with plain text content. Returns response text or None."""
-    log_func(f"Processing text content with Gemini ({model_name})...", "info")
-    if not configure_gemini(api_key):
-        messagebox.showerror("API Error", "Failed to configure Gemini API key.", parent=parent_widget)
-        return None
-
-    try:
-        model = genai.GenerativeModel(model_name, safety_settings=GEMINI_SAFETY_SETTINGS)
-        full_prompt = [
-            {"role": "user", "parts": [prompt]},
-            {"role": "model", "parts": ["Okay, I understand. Provide the text content."]},
-            {"role": "user", "parts": [text_content]}
-        ]
-
-        log_func("Sending text analysis request to Gemini...", "info")
-        api_start_time = time.time()
-        response = model.generate_content(full_prompt)
-        api_duration = time.time() - api_start_time
-        log_func(f"Received response from Gemini ({api_duration:.1f}s).", "info")
-
-        raw_response_text = ""
-        try:
-            # Consolidate checks for text extraction
-            if hasattr(response, 'text'):
-                 raw_response_text = response.text.strip()
-            elif hasattr(response,'parts') and response.parts:
-                 raw_response_text = "".join(part.text for part in response.parts if hasattr(part, 'text')).strip()
-        except ValueError as e:
-             log_func(f"Error accessing response text/parts: {e}. Response: {response}", "warning")
-        except Exception as e:
-             log_func(f"Could not extract text from response: {e}", "warning")
-
-        # --- Check Blocking/Finish Reasons (similar to visual extraction) ---
-        block_reason = None
-        block_reason_enum = getattr(genai.types, 'BlockReason', None)
-        block_reason_unspecified = getattr(block_reason_enum, 'BLOCK_REASON_UNSPECIFIED', 0) if block_reason_enum else 0
-        try:
-            if response.prompt_feedback:
-                block_reason = response.prompt_feedback.block_reason
-                if block_reason == block_reason_unspecified:
-                    block_reason = None
+                if block_reason == block_reason_unspecified: block_reason = None
         except ValueError: pass
         except Exception as e: log_func(f"Minor error accessing block_reason: {e}", "debug")
 
         finish_reason_val = None
         finish_reason_enum = getattr(genai.types, 'FinishReason', None)
         finish_reason_safety = getattr(finish_reason_enum, 'SAFETY', 3) if finish_reason_enum else 3
-        finish_reason_stop = getattr(finish_reason_enum, 'STOP', 2) if finish_reason_enum else 2
         try:
             if response.candidates: finish_reason_val = response.candidates[0].finish_reason
             log_func(f"Gemini finish reason: {finish_reason_val}", "debug")
@@ -256,73 +212,235 @@ def call_gemini_text_analysis(text_content, api_key, model_name, prompt, log_fun
                 error_msg = f"Request blocked by API. Reason: {block_reason}"
                 log_func(error_msg, level="error")
                 messagebox.showerror("API Error", error_msg, parent=parent_widget)
-                return None
+                # Return None for data, but keep URI for cleanup. Return potentially saved partial results?
+                # Let's return None for now, user can check the temp file.
+                return None, uploaded_file_uri
             else:
                 log_func(f"Safety block '{block_reason}' present, but finish reason is '{finish_reason_val}'. Proceeding.", level="warning")
 
-        # Check if response is empty despite no block
-        if not raw_response_text and not block_reason:
-             candidates_exist = hasattr(response, 'candidates') and response.candidates and response.candidates[0] is not None
-             # Check if finish reason is STOP - if not, something likely went wrong
-             if not candidates_exist or finish_reason_val != finish_reason_stop:
-                  feedback = "N/A"
-                  try: feedback = str(response.prompt_feedback) if response.prompt_feedback else "N/A"
-                  except Exception: pass
-                  error_msg = f"API call returned no text, finish_reason={finish_reason_val}. Feedback: {feedback}"
-                  log_func(error_msg, level="error")
-                  # Optionally show error to user?
-                  # messagebox.showwarning("API Warning", "Gemini returned an empty response.", parent=parent_widget)
-                  return None # Return None to indicate failure/unusable response
+        # If parsing failed or returned None earlier, ensure None is returned
+        if all_parsed_objects is None and not block_reason:
+             feedback = "N/A"
+             try:
+                 feedback = str(response.prompt_feedback) if response.prompt_feedback else "N/A"
+             except Exception:
+                 pass # Corrected: Moved pass to its own line
+             log_func(f"API call finished, but JSON parsing failed/unusable. Finish={finish_reason_val}. Feedback: {feedback}", level="error")
+             return None, uploaded_file_uri
 
-        log_func("Text analysis Gemini call complete.", "info")
-        return raw_response_text
+        log_func("Gemini Visual JSON extraction step complete.", "info")
+        # Return the list of successfully parsed objects (can be empty []) or None if critical errors occurred
+        return all_parsed_objects, uploaded_file_uri
 
     except google.api_core.exceptions.GoogleAPIError as api_e:
-        error_type = type(api_e).__name__
-        error_message = f"Gemini API Error (Text): {error_type}: {api_e}"
-        log_func(error_message, level="error")
-        messagebox.showerror("API Error", error_message, parent=parent_widget)
-        return None
+        error_type = type(api_e).__name__; error_message = f"Gemini API Error (Visual): {error_type}: {api_e}"
+        log_func(error_message, level="error"); messagebox.showerror("API Error", error_message, parent=parent_widget)
+        return None, uploaded_file_uri # Keep URI if upload succeeded
+    except FileNotFoundError:
+        error_message = f"Input PDF not found: {pdf_path}"
+        log_func(error_message, level="error"); messagebox.showerror("File Error", error_message, parent=parent_widget)
+        return None, None
     except Exception as e:
-        error_message = f"Unexpected error during Gemini text call: {type(e).__name__}: {e}"
-        log_func(f"FATAL API ERROR (Text): {error_message}\n{traceback.format_exc()}", level="error")
-        messagebox.showerror("Unexpected Error", error_message, parent=parent_widget)
+        error_message = f"Unexpected error during Gemini visual call: {type(e).__name__}: {e}"
+        log_func(f"FATAL API ERROR (Visual): {error_message}\n{traceback.format_exc()}", level="error"); messagebox.showerror("Unexpected Error", error_message, parent=parent_widget)
+        return None, uploaded_file_uri # Keep URI if upload might have succeeded
+
+# --- Modified Text Analysis ---
+def call_gemini_text_analysis(text_content, api_key, model_name, prompt, log_func,
+                              output_dir, base_filename, # Added for incremental saving
+                              chunk_size=30000, api_delay=5.0, # Added chunking params
+                              parent_widget=None):
+    """
+    Calls Gemini with plain text content, processing in chunks.
+    Saves accumulated results incrementally.
+    Returns the final list of parsed JSON objects or None.
+    """
+    log_func(f"Processing text content with Gemini ({model_name}) in chunks...", "info")
+    if not configure_gemini(api_key):
+        messagebox.showerror("API Error", "Failed to configure Gemini API key.", parent=parent_widget)
         return None
 
+    all_parsed_data = [] # Accumulate results from all chunks
+    temp_save_path = None # Track path to incrementally saved results
+    safe_base_name = sanitize_filename(base_filename)
+
+    # --- Split text into chunks ---
+    # Simple character-based chunking
+    total_len = len(text_content)
+    num_chunks = math.ceil(total_len / chunk_size)
+    log_func(f"Splitting text ({total_len} chars) into ~{num_chunks} chunks of size {chunk_size}.", "debug")
+
+    block_reason_enum = getattr(genai.types, 'BlockReason', None)
+    block_reason_unspecified = getattr(block_reason_enum, 'BLOCK_REASON_UNSPECIFIED', 0) if block_reason_enum else 0
+    finish_reason_enum = getattr(genai.types, 'FinishReason', None)
+    finish_reason_safety = getattr(finish_reason_enum, 'SAFETY', 3) if finish_reason_enum else 3
+    finish_reason_stop = getattr(finish_reason_enum, 'STOP', 2) if finish_reason_enum else 2
+
+    model = genai.GenerativeModel(model_name, safety_settings=GEMINI_SAFETY_SETTINGS)
+
+    for i in range(num_chunks):
+        chunk_start_time = time.time()
+        chunk_num = i + 1
+        start_index = i * chunk_size
+        end_index = min((i + 1) * chunk_size, total_len)
+        chunk_text = text_content[start_index:end_index]
+        log_func(f"Processing chunk {chunk_num}/{num_chunks} ({len(chunk_text)} chars)...", "info")
+
+        if not chunk_text.strip():
+            log_func(f"Skipping empty chunk {chunk_num}.", "debug")
+            continue
+
+        try:
+            full_prompt = [
+                {"role": "user", "parts": [prompt]},
+                {"role": "model", "parts": ["Okay, I understand. Provide the text chunk."]},
+                {"role": "user", "parts": [chunk_text]}
+            ]
+
+            log_func(f"Sending chunk {chunk_num} analysis request to Gemini...", "debug")
+            api_start_time = time.time()
+            response = model.generate_content(full_prompt)
+            api_duration = time.time() - api_start_time
+            log_func(f"Received response for chunk {chunk_num} ({api_duration:.1f}s).", "debug")
+
+            raw_response_text = ""
+            try:
+                if hasattr(response, 'text'): raw_response_text = response.text.strip()
+                elif hasattr(response,'parts') and response.parts: raw_response_text = "".join(part.text for part in response.parts if hasattr(part, 'text')).strip()
+            except ValueError as e: log_func(f"Error accessing response text/parts (chunk {chunk_num}): {e}. Response: {response}", "warning")
+            except Exception as e: log_func(f"Could not extract text from response (chunk {chunk_num}): {e}", "warning")
+
+            # --- Check Blocking/Finish Reasons ---
+            block_reason = None
+            try:
+                if response.prompt_feedback:
+                    block_reason = response.prompt_feedback.block_reason
+                    if block_reason == block_reason_unspecified: block_reason = None
+            except ValueError: pass
+            except Exception as e: log_func(f"Minor error accessing block_reason (chunk {chunk_num}): {e}", "debug")
+
+            finish_reason_val = None
+            try:
+                if response.candidates: finish_reason_val = response.candidates[0].finish_reason
+                log_func(f"Chunk {chunk_num} finish reason: {finish_reason_val}", "debug")
+            except Exception as e: log_func(f"Minor error accessing finish_reason (chunk {chunk_num}): {e}", "debug")
+
+            if block_reason:
+                all_blocked = finish_reason_val == finish_reason_safety
+                if all_blocked:
+                    error_msg = f"Chunk {chunk_num} blocked by API. Reason: {block_reason}"
+                    log_func(error_msg, level="error")
+                    # Continue to next chunk, but maybe add placeholder? No, just skip.
+                    continue # Skip this chunk
+                else:
+                    log_func(f"Chunk {chunk_num} had block '{block_reason}' but finish reason is '{finish_reason_val}'. Proceeding.", level="warning")
+
+            # --- Parse JSON Response for this Chunk ---
+            parsed_chunk_data = None
+            if raw_response_text:
+                try:
+                    parsed_chunk_data = json.loads(raw_response_text)
+                    if isinstance(parsed_chunk_data, list):
+                        valid_items = []
+                        for item in parsed_chunk_data:
+                            # Basic validation for book processing format
+                            if isinstance(item, dict) and "question" in item and "answer" in item:
+                                valid_items.append(item)
+                            else:
+                                log_func(f"Skipping invalid item in chunk {chunk_num} response: {str(item)[:100]}...", "warning")
+                        if valid_items:
+                            all_parsed_data.extend(valid_items) # Add valid items to master list
+                            log_func(f"Successfully parsed {len(valid_items)} items from chunk {chunk_num}.", "debug")
+                            # Save accumulated results after successful chunk processing
+                            temp_save_path = save_json_incrementally(all_parsed_data, output_dir, safe_base_name, "text_analysis", log_func)
+                        else:
+                             log_func(f"No valid Q&A items found in chunk {chunk_num} JSON response.", "warning")
+                    else:
+                        log_func(f"Parsing Error: Chunk {chunk_num} JSON is not a list.", "error")
+                except json.JSONDecodeError as e:
+                    log_func(f"Parsing Error: Failed to decode JSON for chunk {chunk_num}: {e}", "error")
+                    log_func(f"--- Invalid JSON Received (Chunk {chunk_num}) ---\n{raw_response_text[:500]}\n---", "debug")
+                except Exception as e:
+                    log_func(f"Unexpected error parsing chunk {chunk_num} JSON: {e}", "error")
+            elif not block_reason: # Empty response, no block
+                 log_func(f"Warning: Received empty response for chunk {chunk_num}.", "warning")
+                 candidates_exist = hasattr(response, 'candidates') and response.candidates and response.candidates[0] is not None
+                 if not candidates_exist or finish_reason_val != finish_reason_stop:
+                      feedback = "N/A"
+                      try:
+                          feedback = str(response.prompt_feedback) if response.prompt_feedback else "N/A"
+                      except Exception:
+                          pass # Corrected: Moved pass to its own line
+                      log_func(f"Chunk {chunk_num} empty response, finish_reason={finish_reason_val}. Feedback: {feedback}. Treating as error.", level="error")
+                      # Decide if this should halt the whole process or just skip chunk? Skip for now.
+
+        except google.api_core.exceptions.GoogleAPIError as api_e:
+            error_type = type(api_e).__name__; error_message = f"Gemini API Error (Chunk {chunk_num}): {error_type}: {api_e}"
+            log_func(error_message, level="error")
+            # Continue to next chunk? Yes, for resilience.
+        except Exception as e:
+            error_message = f"Unexpected error processing chunk {chunk_num}: {type(e).__name__}: {e}"
+            log_func(f"FATAL CHUNK ERROR: {error_message}\n{traceback.format_exc()}", level="error")
+            # Continue to next chunk? Yes.
+
+        chunk_end_time = time.time()
+        log_func(f"Finished processing chunk {chunk_num}. Time: {chunk_end_time - chunk_start_time:.2f}s", "debug")
+
+        # API Delay between chunks
+        if chunk_num < num_chunks and api_delay > 0:
+            log_func(f"Waiting {api_delay:.1f}s before next chunk...", "debug")
+            time.sleep(api_delay)
+
+    log_func("Text analysis Gemini calls complete.", "info")
+    if not all_parsed_data:
+        log_func("Warning: No data was successfully extracted from any text chunk.", "warning")
+        # Return empty list to allow empty TSV generation? Yes.
+        return []
+
+    # Final save of all accumulated data
+    final_save_path = save_json_incrementally(all_parsed_data, output_dir, safe_base_name, "text_analysis_final", log_func)
+    if final_save_path:
+        log_func(f"Final combined results saved to {os.path.basename(final_save_path)}", "info")
+    else:
+        log_func("Error saving final combined results.", "error") # Should not happen if intermediate saves worked
+
+    return all_parsed_data
+
+
+# --- Modified Tagging Function ---
 def tag_tsv_rows_gemini(data_rows_with_header, api_key, model_name, system_prompt,
-                       batch_size, api_delay, log_func, progress_callback=None, parent_widget=None):
-    """Tags TSV data rows using Gemini batches. Yields tagged rows (list)."""
+                       batch_size, api_delay, log_func, progress_callback=None,
+                       output_dir=None, base_filename=None, # Added for incremental saving
+                       parent_widget=None):
+    """
+    Tags TSV data rows using Gemini batches. Yields tagged rows (list).
+    Includes incremental saving of tagged results.
+    """
     if not data_rows_with_header:
         log_func("No data rows provided for tagging.", "warning")
-        return # Return or yield nothing
+        return
 
     header = data_rows_with_header[0]
     data_rows = data_rows_with_header[1:]
     total_rows = len(data_rows)
-    processed_rows = 0
+    processed_rows_count = 0
     total_batches = (total_rows + batch_size - 1) // batch_size
     log_func(f"Starting Gemini tagging: {total_rows} rows, {total_batches} batches.", "info")
 
     if not configure_gemini(api_key):
         messagebox.showerror("API Error", "Failed to configure Gemini API key for tagging.", parent=parent_widget)
-        # Yield rows with errors?
-        for row in data_rows:
-            yield row + ["ERROR: API Key Config Failed"]
+        for row in data_rows: yield row + ["ERROR: API Key Config Failed"]
         return
 
     model = genai.GenerativeModel(model_name, safety_settings=GEMINI_SAFETY_SETTINGS)
 
-    # Prepare output header
     output_header = header[:]
     tags_col_exists = "Tags" in output_header
     tags_col_index = -1
     if tags_col_exists:
-        try:
-            tags_col_index = header.index("Tags")
-        except ValueError: # Should not happen if exists, but handle anyway
-             tags_col_exists = False
-    if not tags_col_exists:
-        output_header.append("Tags")
+        try: tags_col_index = header.index("Tags")
+        except ValueError: tags_col_exists = False
+    if not tags_col_exists: output_header.append("Tags")
 
     yield output_header # Yield header first
 
@@ -331,13 +449,18 @@ def tag_tsv_rows_gemini(data_rows_with_header, api_key, model_name, system_promp
     finish_reason_enum = getattr(genai.types, 'FinishReason', None)
     finish_reason_safety = getattr(finish_reason_enum, 'SAFETY', 3) if finish_reason_enum else 3
 
+    all_tagged_rows = [] # Accumulate tagged rows for saving
+    safe_base_name = sanitize_filename(base_filename) if base_filename else "tagging_output"
+    temp_save_path = None
+
     for i in range(0, total_rows, batch_size):
         batch_start_time = time.time()
         batch_num = i // batch_size + 1
         log_func(f"Tagging Batch {batch_num}/{total_batches}...", "debug")
         if progress_callback:
-            progress = 50 + (processed_rows / total_rows) * 45 if total_rows > 0 else 50 # Simulate progress if needed
-            progress_callback(progress) # Update progress bar if callback provided
+            # Adjust progress calculation if needed, e.g., based on workflow step
+            progress = (processed_rows_count / total_rows) * 100 if total_rows > 0 else 0
+            progress_callback(progress)
 
         batch = data_rows[i:min(i + batch_size, total_rows)]
         batch_prompt_content_lines = [f"[{idx + 1}] {' | '.join(map(str, row))}" for idx, row in enumerate(batch)]
@@ -356,8 +479,7 @@ def tag_tsv_rows_gemini(data_rows_with_header, api_key, model_name, system_promp
             try:
                 if response.prompt_feedback:
                     block_reason = response.prompt_feedback.block_reason
-                    if block_reason == block_reason_unspecified:
-                        block_reason = None
+                    if block_reason == block_reason_unspecified: block_reason = None
             except ValueError: pass
             except Exception as e: log_func(f"Minor error accessing block_reason: {e}", "debug")
 
@@ -379,64 +501,81 @@ def tag_tsv_rows_gemini(data_rows_with_header, api_key, model_name, system_promp
         except google.api_core.exceptions.GoogleAPIError as api_e:
             error_type = type(api_e).__name__; error_message = str(api_e)
             log_func(f"API Error batch {batch_num}: {error_type}: {error_message}", "error")
-            # Add error message here if needed for UI
-            # messagebox.showerror(...) # Maybe too noisy? Let log handle it.
             tag_responses = [f"ERROR: API Call Failed ({error_type})" for _ in batch]
-            # Decide: stop workflow or mark errors? Mark errors for now.
         except Exception as e:
              error_type = type(e).__name__
              log_func(f"Unexpected error batch {batch_num}: {error_type}: {e}\n{traceback.format_exc()}", "error")
              tag_responses = [f"ERROR: Processing Failed ({error_type})" for _ in batch]
 
-        # Yield tagged rows for this batch
+        # Process and yield tagged rows for this batch
+        batch_tagged_rows = []
         for row_index, row in enumerate(batch):
             tags = tag_responses[row_index] if row_index < len(tag_responses) else "ERROR: Tag Index Error"
-            output_row_list = row[:] # Copy original row
+            output_row_list = row[:]
 
             if tags_col_exists:
-                if tags_col_index != -1 and tags_col_index < len(output_row_list):
-                     output_row_list[tags_col_index] = tags
-                else: # Fallback if index somehow invalid or row too short
-                     log_func(f"Warning: Could not place tag in existing column index {tags_col_index} for row {processed_rows + row_index + 1}. Appending.", "warning")
-                     output_row_list.append(tags) # Append tag if index failed
-            else:
-                 output_row_list.append(tags) # Append if Tags col is new
+                if tags_col_index != -1 and tags_col_index < len(output_row_list): output_row_list[tags_col_index] = tags
+                else: log_func(f"Warning: Could not place tag in existing column index {tags_col_index}. Appending.", "warning"); output_row_list.append(tags)
+            else: output_row_list.append(tags)
 
-            # Ensure final row matches output header length
-            if len(output_row_list) < len(output_header):
-                 output_row_list.extend([""] * (len(output_header) - len(output_row_list)))
-            elif len(output_row_list) > len(output_header):
-                 output_row_list = output_row_list[:len(output_header)]
+            if len(output_row_list) < len(output_header): output_row_list.extend([""] * (len(output_header) - len(output_row_list)))
+            elif len(output_row_list) > len(output_header): output_row_list = output_row_list[:len(output_header)]
 
-            yield output_row_list
+            yield output_row_list # Yield row immediately for writing
+            batch_tagged_rows.append(output_row_list) # Also store for incremental save
 
-        processed_rows += len(batch)
+        all_tagged_rows.extend(batch_tagged_rows) # Add batch to accumulated list
+        processed_rows_count += len(batch)
+
+        # --- Incremental Save for Tagging ---
+        if output_dir and base_filename:
+            # Save the accumulated tagged rows (including header)
+            rows_to_save = [output_header] + all_tagged_rows
+            temp_save_path = save_tsv_incrementally(rows_to_save, output_dir, safe_base_name, "tagging", log_func)
+        # ------------------------------------
+
         batch_end_time = time.time()
         log_func(f"Batch {batch_num} tagged. Time: {batch_end_time - batch_start_time:.2f}s", "debug")
 
-        # API Delay
         if i + batch_size < total_rows and api_delay > 0:
             log_func(f"Waiting {api_delay:.1f}s...", "debug")
             time.sleep(api_delay)
 
+    # Final progress update
+    if progress_callback: progress_callback(100)
     log_func("Gemini tagging finished.", "info")
+    # Final save is implicitly done after the last batch by the incremental save logic
 
+# --- NEW Helper for Incremental TSV Saving ---
+def save_tsv_incrementally(rows_list, output_dir, base_filename, step_name, log_func):
+    """Saves the current list of rows (including header) to a temporary TSV file."""
+    if not rows_list:
+        return None
+
+    temp_filename = f"{base_filename}_{step_name}_temp_results.tsv" # Use .tsv
+    temp_filepath = os.path.join(output_dir, temp_filename)
+    try:
+        with open(temp_filepath, 'w', encoding='utf-8', newline='') as f:
+            for row in rows_list:
+                f.write("\t".join(map(str, row)) + "\n")
+        log_func(f"Saved intermediate {step_name} results ({len(rows_list)-1} data rows) to {temp_filename}", "debug")
+        return temp_filepath
+    except Exception as e:
+        log_func(f"Error saving intermediate {step_name} TSV results to {temp_filepath}: {e}", "error")
+        return None
+# ------------------------------------------
 
 def cleanup_gemini_file(uploaded_file_uri, api_key, log_func):
     """Deletes a file previously uploaded to Gemini."""
-    if not uploaded_file_uri:
-        return
+    if not uploaded_file_uri: return
     log_func(f"Attempting to clean up uploaded file: {uploaded_file_uri}", "info")
     try:
         if not configure_gemini(api_key):
-             log_func("Cleanup failed: Could not configure API key.", "warning")
-             return
-        # Extract just the file ID part if URI format is 'files/...'
+             log_func("Cleanup failed: Could not configure API key.", "warning"); return
         file_name_to_delete = uploaded_file_uri
-        if '/' in file_name_to_delete:
-            file_name_to_delete = file_name_to_delete.split('/')[-1]
-
+        if '/' in file_name_to_delete: file_name_to_delete = file_name_to_delete.split('/')[-1]
         genai.delete_file(name=f"files/{file_name_to_delete}")
         log_func(f"Successfully deleted Gemini file: {file_name_to_delete}", "info")
     except Exception as delete_e:
+        # Log specific error types if helpful (e.g., NotFound)
         log_func(f"Cleanup failed for '{uploaded_file_uri}': {delete_e}", "warning")
