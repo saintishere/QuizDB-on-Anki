@@ -213,7 +213,8 @@ def generate_tsv_visual(parsed_data, tsv_output_dir, sanitized_base_name, page_i
 
                 row_values["QuestionMedia"] = " ".join(sorted(list(q_media_tags)))
                 row_values["AnswerMedia"] = " ".join(sorted(list(a_media_tags)))
-                row_to_write = [row_values["Question"], row_values["QuestionMedia"], row_values["Answer"], row_values["AnswerMedia"]]
+                # Use the defined header order
+                row_to_write = [row_values.get(h, "") for h in header]
                 f.write("\t".join(row_to_write) + "\n")
 
         log_func(f"Saved Visual TSV file to '{tsv_filename}'.", "info")
@@ -223,24 +224,31 @@ def generate_tsv_visual(parsed_data, tsv_output_dir, sanitized_base_name, page_i
 
 
 def generate_tsv_text_analysis(parsed_data, tsv_output_dir, sanitized_base_name, log_func):
-    """Generates a simple TSV for Text Analysis output."""
-    log_func("Generating Text Analysis TSV file...", "info")
+    """Generates a simple TSV for Text Analysis output (Question & Answer only)."""
+    log_func("Generating Text Analysis TSV file (Question/Answer only)...", "info")
     tsv_filename = f"{sanitized_base_name}_text_analysis.txt"
     tsv_filepath = os.path.join(tsv_output_dir, tsv_filename)
 
-    if not parsed_data:
-        log_func("No data provided for text analysis TSV generation.", "warning")
-        # Create an empty file with a default header maybe?
-        parsed_data = [{"AnalysisResult": ""}] # Ensure header exists
+    # --- MODIFICATION START ---
+    # Explicitly define the desired header
+    header = ["Question", "Answer"]
+    # --- MODIFICATION END ---
 
-    header = list(parsed_data[0].keys()) if parsed_data else ["AnalysisResult"]
+    if not parsed_data:
+        log_func("No data provided for text analysis TSV generation. Creating empty file.", "warning")
+        parsed_data = [] # Ensure loop doesn't run but file gets created
 
     try:
         with open(tsv_filepath, 'w', encoding='utf-8', newline='') as f:
-            f.write("\t".join(header) + "\n")
+            f.write("\t".join(header) + "\n") # Write the fixed header
             for item in parsed_data:
                 if isinstance(item, dict):
-                    f.write("\t".join(str(item.get(h, '')) for h in header) + "\n")
+                    # Extract only the values for the fixed header columns
+                    row_values = [
+                        item.get("question", ""),
+                        item.get("answer", "")
+                    ]
+                    f.write("\t".join(map(str, row_values)) + "\n")
                 else:
                     log_func(f"Warning: Skipping non-dictionary item in text analysis data: {item}", "warning")
         log_func(f"Saved Text Analysis TSV file to '{tsv_filename}'.", "info")
