@@ -24,12 +24,14 @@ except ImportError:
         print("CRITICAL ERROR: Could not import BATCH_TAGGING prompt for tag extraction.")
         BATCH_TAGGING = ""  # fallback so that name is defined
 
-# --- NEW: Function to extract allowed tags from the BATCH_TAGGING prompt ---
+# --- UPDATED _extract_allowed_tags_from_prompt function ---
 def _extract_allowed_tags_from_prompt(prompt_string):
     """
     Parses the BATCH_TAGGING prompt string to extract all allowed tags.
+    
     Args:
         prompt_string (str): The BATCH_TAGGING prompt content.
+    
     Returns:
         set: A set containing all unique allowed tags (strings starting with '#').
     """
@@ -37,20 +39,22 @@ def _extract_allowed_tags_from_prompt(prompt_string):
     # Find all blocks enclosed in {} first
     brace_blocks = re.findall(r'\{([^{}]*?)\}', prompt_string, re.DOTALL)
     for block_content in brace_blocks:
-        # Find all words starting with #
-        tags_in_block = re.findall(r'(\#\S+)', block_content)
+        # Updated regex: captures tags with letters, digits, underscores, colons, or hyphens
+        tags_in_block = re.findall(r'(#[A-Za-z0-9_:\-]+)', block_content)
+        # Optional debug: print("DEBUG: Found tags in block:", tags_in_block)
         for tag in tags_in_block:
             if tag.startswith('#') and len(tag) > 1:
                 allowed_tags.add(tag.strip())
     if not allowed_tags:
         print("WARNING: No allowed tags extracted from the BATCH_TAGGING prompt. Filtering will remove all tags.")
-        # Fallback: extract any tags starting with #
-        fallback_tags = re.findall(r'(\#\S+)', prompt_string)
+        # Fallback: use same refined regex on the entire prompt_string
+        fallback_tags = re.findall(r'(#[A-Za-z0-9_:\-]+)', prompt_string)
         for tag in fallback_tags:
             if tag.startswith('#') and len(tag) > 1:
                 allowed_tags.add(tag.strip())
         if allowed_tags:
             print("INFO: Using fallback tags found outside of {} blocks.")
+    # Optional debug: print("DEBUG: Total allowed tags extracted:", len(allowed_tags))
     return allowed_tags
 
 # Create a global set of allowed tags on module load

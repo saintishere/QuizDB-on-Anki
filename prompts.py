@@ -241,8 +241,6 @@ Reference Document: These categories include and are limited to the following, s
 #Core::When::Predicted-To-Happen
 #Core::When::Spans-Multiple-Timeperiods
 }
-
-Subject
 {
 #Subject::Art
 #Subject::Art::Painting-Printmaking-Drawing-And-2D-Art
@@ -476,7 +474,7 @@ Subject
 #Subject::Finance::Financial-Instruments
 #Subject::Finance::Economics
 #Subject::Finance::Anything-else-related-to-finance
-
+}
 Make sure that at last one tag from the following set is chosen.
 {
 #Subject::Marketing
