@@ -434,15 +434,13 @@ class ProcessFilePage(ttk.Frame):
 
             # === Step 1c: Generate TSV ===
             self.after(0, self.log_status, "Step 3 (Visual): Generating TSV from extracted data...", "step")
-            # ***** FIX: Remove tsv_output_dir and sanitized_base from the call *****
             tsv_file_path = generate_tsv_visual(
                 parsed_data,
                 self.p2_page_image_map,
-                self.log_status
-                # Removed tsv_output_dir, sanitized_base
-                # Note: The function will use its internal (placeholder) logic to determine output path
-                #       when return_rows=False (default). This might need adjustment in file_processor.py
-                #       if a specific output path is needed here. For now, this fixes the TypeError.
+                self.log_status,
+                return_rows=False,  # Keep False for Page 2 usage
+                tsv_output_dir=tsv_output_dir,  # Pass the directory selected in the UI
+                sanitized_base_name=safe_base_name  # Pass the sanitized name derived earlier
             )
             if tsv_file_path is None: raise ProcessingError("Failed during TSV file generation.")
             self.after(0, self.log_status, "Step 1c Complete.", "info")

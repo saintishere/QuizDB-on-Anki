@@ -173,7 +173,7 @@ def read_text_file(txt_path, log_func):
         log_func(f"Error reading text file '{os.path.basename(txt_path)}': {e}", "error")
         return None
 
-def generate_tsv_visual(parsed_data, page_image_map, log_func, return_rows=False):
+def generate_tsv_visual(parsed_data, page_image_map, log_func, return_rows=False, tsv_output_dir='.', sanitized_base_name='output'):
     """
     Generates TSV data for Visual Q&A from parsed JSON data.
 
@@ -183,6 +183,8 @@ def generate_tsv_visual(parsed_data, page_image_map, log_func, return_rows=False
         log_func (callable): Function to log status messages.
         return_rows (bool): If True, returns a list of lists (header + data rows)
                             instead of writing to a file. Defaults to False.
+        tsv_output_dir (str): Directory where the TSV file should be saved. Defaults to current directory.
+        sanitized_base_name (str): Base name for the TSV file. Defaults to 'output'.
 
     Returns:
         If return_rows is True: list or None - List of lists representing TSV rows (including header), or None on error.
@@ -266,26 +268,22 @@ def generate_tsv_visual(parsed_data, page_image_map, log_func, return_rows=False
             # Return only data rows if requested (used by bulk workflow)
             return output_rows[1:] if len(output_rows) > 1 else []
         else:
-            # --- Deprecated Path (Kept for Page 2 Compatibility) ---
-            # Determine output path based on input (assuming tsv_output_dir and sanitized_base_name are passed if needed)
-            # This part needs context from where it's called if return_rows is False
-            # For now, let's assume context provides these if needed.
-            # Example: tsv_output_dir = kwargs.get('tsv_output_dir', '.')
-            # Example: sanitized_base_name = kwargs.get('sanitized_base_name', 'output')
-            tsv_output_dir = '.' # Placeholder
-            sanitized_base_name = 'output' # Placeholder
-            tsv_filename = f"{sanitized_base_name}_visual_anki.txt"
+            # --- Modified Path for Page 2 Compatibility ---
+            tsv_filename = f"{sanitized_base_name}_visual_anki.txt"  # Use the actual base name
+            if not tsv_output_dir or not os.path.isdir(tsv_output_dir):
+                log_func(f"Warning: Invalid output directory '{tsv_output_dir}' provided. Using current directory '.'", "warning")
+                tsv_output_dir = '.'
             tsv_filepath = os.path.join(tsv_output_dir, tsv_filename)
             try:
                 with open(tsv_filepath, 'w', encoding='utf-8', newline='') as f:
                     for row in output_rows:
                         f.write("\t".join(map(str, row)) + "\n")
-                log_func(f"Saved Visual TSV file to '{tsv_filename}'.", "info")
+                log_func(f"Saved Visual TSV file to: {tsv_filepath}", "info")
                 return tsv_filepath
             except IOError as e:
                 log_func(f"Error writing TSV file '{tsv_filepath}': {e}", "error")
                 return None
-            # --- End Deprecated Path ---
+            # --- End Modified Path ---
 
     except Exception as e:
         log_func(f"Unexpected error generating TSV data from JSON: {e}\n{traceback.format_exc()}", "error")

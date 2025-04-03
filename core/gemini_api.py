@@ -13,10 +13,48 @@ import math # For calculating text chunks
 try:
     from ..constants import GEMINI_SAFETY_SETTINGS
     from ..utils.helpers import ProcessingError, sanitize_filename # Use custom exception, add sanitize_filename
+    from ..prompts import BATCH_TAGGING # Import BATCH_TAGGING prompt
 except ImportError:
     # Fallback for direct execution or different structure
     from constants import GEMINI_SAFETY_SETTINGS
     from utils.helpers import ProcessingError, sanitize_filename
+    try:
+        from prompts import BATCH_TAGGING
+    except ImportError:
+        print("CRITICAL ERROR: Could not import BATCH_TAGGING prompt for tag extraction.")
+        BATCH_TAGGING = ""  # fallback so that name is defined
+
+# --- NEW: Function to extract allowed tags from the BATCH_TAGGING prompt ---
+def _extract_allowed_tags_from_prompt(prompt_string):
+    """
+    Parses the BATCH_TAGGING prompt string to extract all allowed tags.
+    Args:
+        prompt_string (str): The BATCH_TAGGING prompt content.
+    Returns:
+        set: A set containing all unique allowed tags (strings starting with '#').
+    """
+    allowed_tags = set()
+    # Find all blocks enclosed in {} first
+    brace_blocks = re.findall(r'\{([^{}]*?)\}', prompt_string, re.DOTALL)
+    for block_content in brace_blocks:
+        # Find all words starting with #
+        tags_in_block = re.findall(r'(\#\S+)', block_content)
+        for tag in tags_in_block:
+            if tag.startswith('#') and len(tag) > 1:
+                allowed_tags.add(tag.strip())
+    if not allowed_tags:
+        print("WARNING: No allowed tags extracted from the BATCH_TAGGING prompt. Filtering will remove all tags.")
+        # Fallback: extract any tags starting with #
+        fallback_tags = re.findall(r'(\#\S+)', prompt_string)
+        for tag in fallback_tags:
+            if tag.startswith('#') and len(tag) > 1:
+                allowed_tags.add(tag.strip())
+        if allowed_tags:
+            print("INFO: Using fallback tags found outside of {} blocks.")
+    return allowed_tags
+
+# Create a global set of allowed tags on module load
+ALLOWED_TAGS_SET = _extract_allowed_tags_from_prompt(BATCH_TAGGING)
 
 # --- Configuration ---
 # Configure initially with a dummy key. The actual key will be set by configure_gemini.
@@ -39,30 +77,64 @@ def configure_gemini(api_key):
         print(f"Error configuring Gemini: {e}")
         return False
 
+# --- Modified parse_batch_tag_response function ---
 def parse_batch_tag_response(response_text, batch_size):
-    """Parses Gemini's numbered list response to extract tags."""
+    """
+    Parses Gemini's numbered list response to extract tags AND filters
+    them against the globally defined ALLOWED_TAGS_SET.
+    """
+    global ALLOWED_TAGS_SET
+    if not ALLOWED_TAGS_SET:
+        print("ERROR: ALLOWED_TAGS_SET is empty. Cannot filter tags.")
+        return [f"ERROR: Allowed Tag List Empty" for _ in range(batch_size)]
+    
     tags_list = [f"ERROR: No Response Parsed" for _ in range(batch_size)]
     lines = response_text.strip().split('\n')
     parsed_count = 0
+    
+    print(f"DEBUG: Filtering against {len(ALLOWED_TAGS_SET)} allowed tags.")  # Optional debug
     for line in lines:
         line = line.strip()
-        if not line: continue
+        if not line:
+            continue
         match = re.match(r'^\s*\[\s*(\d+)\s*\]\s*(.*)$', line)
         if match:
             try:
                 item_num = int(match.group(1)) - 1
-                tags = match.group(2).strip()
-                tags = re.sub(r'\s+', ' ', tags) # Consolidate whitespace
+                raw_tags_string = match.group(2).strip()
+                # --- Filtering Logic ---
+                if raw_tags_string:
+                    suggested_tags = raw_tags_string.split()  # Split by whitespace
+                    filtered_tags = [tag for tag in suggested_tags if tag in ALLOWED_TAGS_SET]
+                    final_tags_string = " ".join(filtered_tags)
+                else:
+                    final_tags_string = ""
+                # --- End Filtering Logic ---
                 if 0 <= item_num < batch_size:
-                    tags_list[item_num] = tags if tags else "INFO: No tags generated"
+                    tags_list[item_num] = final_tags_string if final_tags_string else "INFO: No Valid Tags Found"
                     parsed_count += 1
-                else: print(f"[Tag Parser] Warning: Item number {item_num + 1} out of range ({batch_size}). Line: '{line}'")
-            except ValueError: print(f"[Tag Parser] Warning: Cannot parse number: '{line}'")
-        else: print(f"[Tag Parser] Warning: Line format mismatch: '{line}'")
+                else:
+                    print(f"[Tag Parser] Warning: Item number {item_num + 1} out of range ({batch_size}). Line: '{line}'")
+            except ValueError:
+                print(f"[Tag Parser] Warning: Cannot parse number: '{line}'")
+                if 0 <= item_num < batch_size:
+                    tags_list[item_num] = "ERROR: Parsing Failed (ValueError)"
+            except Exception as e:
+                print(f"[Tag Parser] Error processing line '{line}': {e}")
+                if 0 <= item_num < batch_size:
+                    tags_list[item_num] = "ERROR: Parsing Failed (Exception)"
+        else:
+            print(f"[Tag Parser] Warning: Line format mismatch: '{line}'")
+            try:
+                if 'item_num' in locals() and 0 <= item_num < batch_size:
+                     tags_list[item_num] = "ERROR: Parsing Failed (Format Mismatch)"
+            except NameError:
+                pass
     if parsed_count != batch_size:
          print(f"[Tag Parser] Warning: Parsed {parsed_count}/{batch_size} items. Check output.")
          for i in range(batch_size):
-              if tags_list[i] == "ERROR: No Response Parsed": tags_list[i] = "ERROR: Parsing Mismatch"
+              if tags_list[i] == "ERROR: No Response Parsed":
+                  tags_list[i] = "ERROR: Parsing Mismatch/Incomplete"
     return tags_list
 
 # --- NEW Helper for Incremental Saving ---
