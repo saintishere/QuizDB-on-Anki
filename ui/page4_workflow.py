@@ -588,46 +588,49 @@ class WorkflowPage(ttk.Frame):
         try:
             start_time = time.time()
             # === STEP 1a: Generate Page Images ===
-            self.after(0, self.log_status, f"Starting Step 1a (Visual): Generating Page Images...", level="step"); self.after(0, self._update_progress_bar, 5)
+            self.after(0, self.log_status, f"Starting Step 1a (Visual): Generating Page Images...", "step"); self.after(0, self._update_progress_bar, 5)
             if save_direct_flag: image_destination_path = anki_media_dir_from_ui
             else: image_destination_path = os.path.join(output_dir, f"{safe_base_name}_workflow_images_{datetime.now():%Y%m%d_%H%M%S}")
             # Pass prefix=None for single file mode
             final_image_folder, page_image_map = generate_page_images(input_pdf_path, image_destination_path, safe_base_name, save_direct_flag, self.log_status, parent_widget=self, filename_prefix=None)
             if final_image_folder is None: raise WorkflowStepError("Failed during page image generation.")
-            self.after(0, self.log_status, f"Step 1a Complete.", level="info"); self.after(0, self._update_progress_bar, 15)
+            self.after(0, self.log_status, f"Step 1a Complete.", "info"); self.after(0, self._update_progress_bar, 15)
 
             # === STEP 1b: Gemini PDF Visual Extraction (JSON) ===
-            self.after(0, self.log_status, f"Starting Step 1b (Visual): Gemini JSON Extraction ({extract_model_name})...", level="step")
+            self.after(0, self.log_status, f"Starting Step 1b (Visual): Gemini JSON Extraction ({extract_model_name})...", "step")
             parsed_data, uploaded_file_uri = call_gemini_visual_extraction(input_pdf_path, api_key, extract_model_name, extract_prompt, self.log_status, parent_widget=self)
             if parsed_data is None: raise WorkflowStepError("Gemini PDF visual extraction failed (check logs/temp files).")
             if not parsed_data: self.after(0, self.log_status, "No Q&A pairs extracted from the document.", "warning") # Changed error to warning
-            self.after(0, self.log_status, "Step 1b Complete.", level="info"); self.after(0, self._update_progress_bar, 40)
+            self.after(0, self.log_status, "Step 1b Complete.", "info"); self.after(0, self._update_progress_bar, 40)
 
             # === STEP 1c: Generating Visual TSV from JSON ===
-            self.after(0, self.log_status, f"Starting Step 1c (Visual): Generating intermediate TSV...", level="step")
+            self.after(0, self.log_status, f"Starting Step 1c (Visual): Generating intermediate TSV...", "step")
             # Modification: generate_tsv_visual now expected to return rows
-            visual_tsv_rows = generate_tsv_visual(parsed_data, page_image_map, self.log_status)
+            visual_tsv_rows = generate_tsv_visual(parsed_data, page_image_map, self.log_status, return_rows=True) # Ask for rows
             if visual_tsv_rows is None: raise WorkflowStepError("Failed to generate intermediate visual TSV data.")
             # Write the intermediate TSV file
             visual_tsv_path = os.path.join(output_dir, f"{safe_base_name}_intermediate_visual.tsv")
             try:
                 with open(visual_tsv_path, 'w', encoding='utf-8', newline='') as f:
+                    # Write header first
+                    f.write("\t".join(["Question", "QuestionMedia", "Answer", "AnswerMedia"]) + "\n")
+                    # Write data rows
                     for row in visual_tsv_rows:
                         f.write("\t".join(map(str, row)) + "\n")
             except IOError as e:
                 raise WorkflowStepError(f"Failed to write intermediate visual TSV file: {e}")
-            self.after(0, self.log_status, f"Step 1 Complete (Visual): Intermediate TSV saved.", level="info"); self.after(0, self._update_progress_bar, 50)
+            self.after(0, self.log_status, f"Step 1 Complete (Visual): Intermediate TSV saved.", "info"); self.after(0, self._update_progress_bar, 50)
 
             # === STEP 2: Tag Intermediate TSV using Gemini ===
-            if not visual_tsv_rows or len(visual_tsv_rows) <= 1: # Check if only header exists
-                 self.after(0, self.log_status, f"Skipping Tagging Step: No data rows in intermediate TSV.", level="warning")
+            if not visual_tsv_rows: # Check if only header exists (rows list would be empty)
+                 self.after(0, self.log_status, f"Skipping Tagging Step: No data rows in intermediate TSV.", "warning")
                  final_output_path = visual_tsv_path # Use the intermediate path as final if no tagging needed
             else:
-                self.after(0, self.log_status, f"Starting Step 2 (Tagging): Tagging Visual TSV ({tag_model_name})...", level="step")
+                self.after(0, self.log_status, f"Starting Step 2 (Tagging): Tagging Visual TSV ({tag_model_name})...", "step")
                 final_output_path = os.path.join(output_dir, f"{safe_base_name}_final_tagged_visual.txt")
                 tagging_success = self._wf_gemini_tag_tsv(visual_tsv_path, final_output_path, tag_prompt_template, api_key, tag_model_name, tag_batch_size, tag_api_delay)
                 if not tagging_success: raise WorkflowStepError("Gemini tagging step failed (check logs/temp files).")
-                self.after(0, self.log_status, f"Step 2 Complete (Tagging): Final tagged file saved: {os.path.basename(final_output_path)}", level="info"); self.after(0, self._update_progress_bar, 95)
+                self.after(0, self.log_status, f"Step 2 Complete (Tagging): Final tagged file saved: {os.path.basename(final_output_path)}", "info"); self.after(0, self._update_progress_bar, 95)
                 # Clean up intermediate file only if tagging was successful
                 if visual_tsv_path and os.path.exists(visual_tsv_path):
                     try: os.remove(visual_tsv_path); self.after(0, self.log_status, f"Cleaned up intermediate file: {os.path.basename(visual_tsv_path)}", "debug")
@@ -635,13 +638,18 @@ class WorkflowPage(ttk.Frame):
 
 
             # === Workflow Complete ===
-            end_time = time.time(); total_time = end_time - start_time; self.after(0, self.log_status, f"Visual Q&A Workflow finished successfully in {total_time:.2f} seconds!", level="info"); self.after(0, self._update_progress_bar, 100)
+            end_time = time.time(); total_time = end_time - start_time; self.after(0, self.log_status, f"Visual Q&A Workflow finished successfully in {total_time:.2f} seconds!", "info"); self.after(0, self._update_progress_bar, 100)
             success_message = f"Processed '{os.path.basename(input_pdf_path)}'.\nFinal file generated:\n{final_output_path}\n\n";
             if save_direct_flag: success_message += f"Images Saved Directly To:\n{final_image_folder}"
             else: success_message += f"Images Saved To Subfolder:\n{final_image_folder}\n\nIMPORTANT: Manually copy images from\n'{os.path.basename(final_image_folder)}' to Anki's 'collection.media' folder before importing the TSV."
             self.after(0, show_info_dialog, "Workflow Complete", success_message, self); success = True
-        except WorkflowStepError as wse: self.after(0, self.log_status, f"Visual Workflow stopped: {wse}", level="error"); self.after(0, show_error_dialog, "Workflow Failed", f"Failed: {wse}\nCheck log and temp files.", self); success = False
-        except Exception as e: error_message = f"Unexpected visual workflow error: {type(e).__name__}: {e}"; self.after(0, self.log_status, f"FATAL WORKFLOW ERROR (Visual): {error_message}\n{traceback.format_exc()}", level="error"); self.after(0, show_error_dialog, "Workflow Error", f"Unexpected error:\n{e}\nCheck log.", self); success = False
+        except WorkflowStepError as wse: self.after(0, self.log_status, f"Visual Workflow stopped: {wse}", "error"); self.after(0, show_error_dialog, "Workflow Failed", f"Failed: {wse}\nCheck log and temp files.", self); success = False
+        except Exception as e:
+            error_message = f"Unexpected visual workflow error: {type(e).__name__}: {e}"
+            self.after(0, self.log_status, f"FATAL WORKFLOW ERROR (Visual): {error_message}\n{traceback.format_exc()}", "error")
+            # The show_error_dialog call doesn't need 'level' and is correct
+            self.after(0, show_error_dialog, "Workflow Error", f"Unexpected error:\n{e}\nCheck log.", self)
+            success = False
         finally:
             if uploaded_file_uri:
                  try: cleanup_gemini_file(uploaded_file_uri, api_key, self.log_status)
@@ -664,16 +672,16 @@ class WorkflowPage(ttk.Frame):
         try:
             start_time = time.time()
             # === STEP 1a: Extract Text Content ===
-            self.after(0, self.log_status, f"Starting Step 1a (Text): Extracting Text...", level="step"); self.after(0, self._update_progress_bar, 5)
+            self.after(0, self.log_status, f"Starting Step 1a (Text): Extracting Text...", "step"); self.after(0, self._update_progress_bar, 5)
             extracted_text = ""; file_type = ""
             if input_file_path.lower().endswith(".pdf"): extracted_text = extract_text_from_pdf(input_file_path, self.log_status); file_type = "PDF"
             elif input_file_path.lower().endswith(".txt"): extracted_text = read_text_file(input_file_path, self.log_status); file_type = "TXT"
             if extracted_text is None: raise WorkflowStepError(f"Text extraction failed for {file_type}.")
             if not extracted_text: self.after(0, self.log_status, f"No text content extracted from the {file_type} file. Workflow finished.", "warning"); self.after(0, self._workflow_finished, True, None); return # Treat as success if no text
-            self.after(0, self.log_status, f"Step 1a Complete. Extracted ~{len(extracted_text)} characters.", level="info"); self.after(0, self._update_progress_bar, 15)
+            self.after(0, self.log_status, f"Step 1a Complete. Extracted ~{len(extracted_text)} characters.", "info"); self.after(0, self._update_progress_bar, 15)
 
             # === STEP 1b: Gemini Text Analysis (Chunked) ===
-            self.after(0, self.log_status, f"Starting Step 1b (Text): Gemini Analysis ({analysis_model_name}) in chunks...", level="step")
+            self.after(0, self.log_status, f"Starting Step 1b (Text): Gemini Analysis ({analysis_model_name}) in chunks...", "step")
             parsed_data = call_gemini_text_analysis(
                 extracted_text, api_key, analysis_model_name, analysis_prompt, self.log_status,
                 output_dir, safe_base_name, # For incremental saving
@@ -682,35 +690,35 @@ class WorkflowPage(ttk.Frame):
             )
             if parsed_data is None: raise WorkflowStepError("Gemini text analysis failed (check logs/temp files).")
             if not parsed_data: self.after(0, self.log_status, "No Q&A pairs extracted from text.", "warning") # Changed error to warning
-            self.after(0, self.log_status, "Step 1b Complete (Gemini chunk processing).", level="info"); self.after(0, self._update_progress_bar, 40)
+            self.after(0, self.log_status, "Step 1b Complete (Gemini chunk processing).", "info"); self.after(0, self._update_progress_bar, 40)
 
             # === STEP 1c: Generating Text Analysis Intermediate TSV ===
-            self.after(0, self.log_status, f"Starting Step 1c (Text): Generating intermediate TSV...", level="step")
+            self.after(0, self.log_status, f"Starting Step 1c (Text): Generating intermediate TSV...", "step")
             analysis_tsv_path = generate_tsv_text_analysis(parsed_data, output_dir, safe_base_name + "_intermediate", self.log_status) # Temp name
             if analysis_tsv_path is None: raise WorkflowStepError("Failed to write intermediate text analysis TSV.")
-            self.after(0, self.log_status, f"Step 1 Complete (Text): Intermediate TSV saved.", level="info"); self.after(0, self._update_progress_bar, 50)
+            self.after(0, self.log_status, f"Step 1 Complete (Text): Intermediate TSV saved.", "info"); self.after(0, self._update_progress_bar, 50)
 
             # === STEP 2: Tag Intermediate TSV using Gemini ===
             if not parsed_data: # Check if analysis yielded data
-                 self.after(0, self.log_status, f"Skipping Tagging Step: No data rows from text analysis.", level="warning")
+                 self.after(0, self.log_status, f"Skipping Tagging Step: No data rows from text analysis.", "warning")
                  final_output_path = analysis_tsv_path # Use intermediate as final
             else:
-                self.after(0, self.log_status, f"Starting Step 2 (Tagging): Tagging Analysis TSV ({tag_model_name})...", level="step")
+                self.after(0, self.log_status, f"Starting Step 2 (Tagging): Tagging Analysis TSV ({tag_model_name})...", "step")
                 final_output_path = os.path.join(output_dir, f"{safe_base_name}_final_tagged_analysis.txt")
                 tagging_success = self._wf_gemini_tag_tsv(analysis_tsv_path, final_output_path, tag_prompt_template, api_key, tag_model_name, tag_batch_size, tag_api_delay) # Pass tagging params
                 if not tagging_success: raise WorkflowStepError("Gemini tagging step failed (check logs/temp files).")
-                self.after(0, self.log_status, f"Step 2 Complete (Tagging): Final tagged file saved: {os.path.basename(final_output_path)}", level="info"); self.after(0, self._update_progress_bar, 95)
+                self.after(0, self.log_status, f"Step 2 Complete (Tagging): Final tagged file saved: {os.path.basename(final_output_path)}", "info"); self.after(0, self._update_progress_bar, 95)
                 # Clean up intermediate file only if tagging was successful
                 if analysis_tsv_path and os.path.exists(analysis_tsv_path):
                     try: os.remove(analysis_tsv_path); self.after(0, self.log_status, f"Cleaned up intermediate file: {os.path.basename(analysis_tsv_path)}", "debug")
                     except Exception as rem_e: self.after(0, self.log_status, f"Could not remove intermediate file {os.path.basename(analysis_tsv_path)}: {rem_e}", "warning")
 
             # === Workflow Complete ===
-            end_time = time.time(); total_time = end_time - start_time; self.after(0, self.log_status, f"Text Analysis Workflow finished successfully in {total_time:.2f} seconds!", level="info"); self.after(0, self._update_progress_bar, 100)
+            end_time = time.time(); total_time = end_time - start_time; self.after(0, self.log_status, f"Text Analysis Workflow finished successfully in {total_time:.2f} seconds!", "info"); self.after(0, self._update_progress_bar, 100)
             success_message = f"Processed '{os.path.basename(input_file_path)}'.\nFinal file generated:\n{final_output_path}\n"
             self.after(0, show_info_dialog, "Workflow Complete", success_message, self); success = True
-        except WorkflowStepError as wse: self.after(0, self.log_status, f"Text Analysis Workflow stopped: {wse}", level="error"); self.after(0, show_error_dialog, "Workflow Failed", f"Failed: {wse}\nCheck log and temp files.", self); success = False
-        except Exception as e: error_message = f"Unexpected text analysis workflow error: {type(e).__name__}: {e}"; self.after(0, self.log_status, f"FATAL WORKFLOW ERROR (Text): {error_message}\n{traceback.format_exc()}", level="error"); self.after(0, show_error_dialog, "Workflow Error", f"Unexpected error:\n{e}\nCheck log.", self); success = False
+        except WorkflowStepError as wse: self.after(0, self.log_status, f"Text Analysis Workflow stopped: {wse}", "error"); self.after(0, show_error_dialog, "Workflow Failed", f"Failed: {wse}\nCheck log and temp files.", self); success = False
+        except Exception as e: error_message = f"Unexpected text analysis workflow error: {type(e).__name__}: {e}"; self.after(0, self.log_status, f"FATAL WORKFLOW ERROR (Text): {error_message}\n{traceback.format_exc()}", "error"); self.after(0, show_error_dialog, "Workflow Error", f"Unexpected error:\n{e}\nCheck log.", self); success = False
         finally:
              # Clean up intermediate file if tagging failed or was skipped
             if not success and analysis_tsv_path and os.path.exists(analysis_tsv_path):
@@ -738,12 +746,12 @@ class WorkflowPage(ttk.Frame):
                 current_file_success = False
                 processed_files += 1
                 file_basename = os.path.basename(pdf_path)
-                self.after(0, self.log_status, f"Processing file {processed_files}/{total_files}: {file_basename}", level="step")
+                self.after(0, self.log_status, f"Processing file {processed_files}/{total_files}: {file_basename}", "step")
                 self.after(0, self._update_progress_bar, (processed_files / total_files) * 50) # 0-50% for file processing
 
                 # 1. Validate PDF extension (redundant check, belt-and-suspenders)
                 if not pdf_path.lower().endswith(".pdf"):
-                    self.after(0, self.log_status, f"Skipping non-PDF file: {file_basename}", level="skip")
+                    self.after(0, self.log_status, f"Skipping non-PDF file: {file_basename}", "skip")
                     skipped_files += 1
                     continue
 
@@ -755,7 +763,7 @@ class WorkflowPage(ttk.Frame):
 
                 try:
                     # === STEP 1a: Generate Page Images (Direct Save, Prefixed) ===
-                    self.after(0, self.log_status, f"  Step 1a: Generating images for {file_basename}...", level="debug")
+                    self.after(0, self.log_status, f"  Step 1a: Generating images for {file_basename}...", "debug")
                     # Pass sanitized PDF name as prefix for uniqueness in collection.media
                     final_image_folder, page_image_map = generate_page_images(
                         pdf_path, anki_media_dir, sanitized_pdf_name, # Use PDF name as base for images
@@ -765,14 +773,14 @@ class WorkflowPage(ttk.Frame):
                     if final_image_folder is None: raise WorkflowStepError("Image generation failed.")
 
                     # === STEP 1b: Gemini PDF Visual Extraction (JSON) ===
-                    self.after(0, self.log_status, f"  Step 1b: Extracting JSON for {file_basename}...", level="debug")
+                    self.after(0, self.log_status, f"  Step 1b: Extracting JSON for {file_basename}...", "debug")
                     parsed_data, uploaded_file_uri = call_gemini_visual_extraction(pdf_path, api_key, extract_model_name, extract_prompt, self.log_status, parent_widget=self)
                     if uploaded_file_uri: uploaded_file_uris[pdf_path] = uploaded_file_uri # Store for cleanup
                     if parsed_data is None: raise WorkflowStepError("Gemini PDF visual extraction failed.")
                     if not parsed_data: self.after(0, self.log_status, f"Warning: No Q&A pairs extracted from {file_basename}.", "warning") # Don't treat as failure
 
                     # === STEP 1c: Generating Visual TSV Rows from JSON ===
-                    self.after(0, self.log_status, f"  Step 1c: Generating TSV rows for {file_basename}...", level="debug")
+                    self.after(0, self.log_status, f"  Step 1c: Generating TSV rows for {file_basename}...", "debug")
                     # Expecting generate_tsv_visual to return rows (list of lists, excluding header)
                     visual_tsv_rows_for_file = generate_tsv_visual(parsed_data, page_image_map, self.log_status, return_rows=True)
                     if visual_tsv_rows_for_file is None: raise WorkflowStepError("Failed to generate TSV data rows.")
@@ -780,36 +788,36 @@ class WorkflowPage(ttk.Frame):
                     # --- Success for this file ---
                     if visual_tsv_rows_for_file: # Only append if rows were actually generated
                         aggregated_tsv_rows.extend(visual_tsv_rows_for_file)
-                        self.after(0, self.log_status, f"Successfully processed {file_basename} ({len(visual_tsv_rows_for_file)} rows added).", level="info")
+                        self.after(0, self.log_status, f"Successfully processed {file_basename} ({len(visual_tsv_rows_for_file)} rows added).", "info")
                     else:
-                         self.after(0, self.log_status, f"Processed {file_basename}, but no data rows generated/added.", level="warning")
+                         self.after(0, self.log_status, f"Processed {file_basename}, but no data rows generated/added.", "warning")
                     success_files += 1
                     current_file_success = True
 
                 except WorkflowStepError as wse_file:
-                    self.after(0, self.log_status, f"Failed processing {file_basename}: {wse_file}", level="error")
+                    self.after(0, self.log_status, f"Failed processing {file_basename}: {wse_file}", "error")
                     failed_files += 1
                     # Attempt to rename the original file
                     try:
                         new_name = os.path.join(os.path.dirname(pdf_path), f"UP_{file_basename}")
                         os.rename(pdf_path, new_name)
-                        self.after(0, self.log_status, f"Renamed failed file to: UP_{file_basename}", level="warning")
+                        self.after(0, self.log_status, f"Renamed failed file to: UP_{file_basename}", "warning")
                     except OSError as rename_e:
-                        self.after(0, self.log_status, f"Could not rename failed file {file_basename}: {rename_e}", level="error")
+                        self.after(0, self.log_status, f"Could not rename failed file {file_basename}: {rename_e}", "error")
                 except Exception as e_file:
-                    self.after(0, self.log_status, f"Unexpected error processing {file_basename}: {type(e_file).__name__}: {e_file}", level="error")
-                    self.after(0, self.log_status, f"Traceback for {file_basename}:\n{traceback.format_exc()}", level="debug")
+                    self.after(0, self.log_status, f"Unexpected error processing {file_basename}: {type(e_file).__name__}: {e_file}", "error")
+                    self.after(0, self.log_status, f"Traceback for {file_basename}:\n{traceback.format_exc()}", "debug")
                     failed_files += 1
                     # Attempt rename on unexpected error too
                     try:
                         new_name = os.path.join(os.path.dirname(pdf_path), f"UP_{file_basename}")
                         os.rename(pdf_path, new_name)
-                        self.after(0, self.log_status, f"Renamed failed file to: UP_{file_basename}", level="warning")
+                        self.after(0, self.log_status, f"Renamed failed file to: UP_{file_basename}", "warning")
                     except OSError as rename_e:
-                        self.after(0, self.log_status, f"Could not rename failed file {file_basename}: {rename_e}", level="error")
+                        self.after(0, self.log_status, f"Could not rename failed file {file_basename}: {rename_e}", "error")
 
             # --- End of File Loop ---
-            self.after(0, self.log_status, f"Finished processing all {total_files} files.", level="info")
+            self.after(0, self.log_status, f"Finished processing all {total_files} files.", "info")
             self.after(0, self._update_progress_bar, 50) # Mark end of file processing stage
 
             # === STEP 2: Aggregate and Tag ===
@@ -819,31 +827,36 @@ class WorkflowPage(ttk.Frame):
             # Write aggregated intermediate TSV
             intermediate_tsv_filename = f"bulk_visual_{datetime.now():%Y%m%d_%H%M%S}_intermediate.tsv"
             intermediate_tsv_path = os.path.join(output_dir, intermediate_tsv_filename)
-            self.after(0, self.log_status, f"Writing aggregated intermediate TSV ({len(aggregated_tsv_rows)-1} data rows)...", level="step")
+            self.after(0, self.log_status, f"Writing aggregated intermediate TSV ({len(aggregated_tsv_rows)-1} data rows)...", "step")
             try:
                 with open(intermediate_tsv_path, 'w', encoding='utf-8', newline='') as f:
                     for row in aggregated_tsv_rows:
                         f.write("\t".join(map(str, row)) + "\n")
             except IOError as e:
                 raise WorkflowStepError(f"Failed to write aggregated intermediate TSV file: {e}")
-            self.after(0, self.log_status, f"Intermediate TSV saved: {intermediate_tsv_filename}", level="info")
+            self.after(0, self.log_status, f"Intermediate TSV saved: {intermediate_tsv_filename}", "info")
             self.after(0, self._update_progress_bar, 55)
 
             # Tag the aggregated TSV
-            self.after(0, self.log_status, f"Starting Step 2 (Tagging): Tagging aggregated TSV ({tag_model_name})...", level="step")
+            self.after(0, self.log_status, f"Starting Step 2 (Tagging): Tagging aggregated TSV ({tag_model_name})...", "step")
             final_output_filename = f"bulk_visual_{datetime.now():%Y%m%d_%H%M%S}_final_tagged.txt"
             final_output_path = os.path.join(output_dir, final_output_filename)
             tagging_success = self._wf_gemini_tag_tsv(intermediate_tsv_path, final_output_path, tag_prompt_template, api_key, tag_model_name, tag_batch_size, tag_api_delay)
             if not tagging_success: raise WorkflowStepError("Gemini tagging step failed for aggregated TSV (check logs/temp files).")
-            self.after(0, self.log_status, f"Step 2 Complete (Tagging): Final tagged file saved: {final_output_filename}", level="info"); self.after(0, self._update_progress_bar, 95)
+            self.after(0, self.log_status, f"Step 2 Complete (Tagging): Final tagged file saved: {final_output_filename}", "info"); self.after(0, self._update_progress_bar, 95)
 
             # === Workflow Complete ===
-            end_time = time.time(); total_time = end_time - start_time; self.after(0, self.log_status, f"Bulk Visual Q&A Workflow finished successfully in {total_time:.2f} seconds!", level="info"); self.after(0, self._update_progress_bar, 100)
+            end_time = time.time(); total_time = end_time - start_time; self.after(0, self.log_status, f"Bulk Visual Q&A Workflow finished successfully in {total_time:.2f} seconds!", "info"); self.after(0, self._update_progress_bar, 100)
             summary = f"Bulk Processing Complete!\n\nFiles Processed: {processed_files}/{total_files}\nSuccessful: {success_files}\nFailed (Renamed 'UP_'): {failed_files}\nSkipped (Non-PDF): {skipped_files}\n\nFinal Tagged File:\n{final_output_path}\n\nImages Saved Directly To:\n{anki_media_dir}"
             self.after(0, show_info_dialog, "Bulk Workflow Complete", summary, self); success = True
 
-        except WorkflowStepError as wse: self.after(0, self.log_status, f"Bulk Workflow stopped: {wse}", level="error"); self.after(0, show_error_dialog, "Bulk Workflow Failed", f"Failed: {wse}\nCheck log and temp files.", self); success = False
-        except Exception as e: error_message = f"Unexpected bulk workflow error: {type(e).__name__}: {e}"; self.after(0, self.log_status, f"FATAL BULK WORKFLOW ERROR: {error_message}\n{traceback.format_exc()}", level="error"); self.after(0, show_error_dialog, "Bulk Workflow Error", f"Unexpected error:\n{e}\nCheck log.", self); success = False
+        except WorkflowStepError as wse: self.after(0, self.log_status, f"Bulk Workflow stopped: {wse}", "error"); self.after(0, show_error_dialog, "Bulk Workflow Failed", f"Failed: {wse}\nCheck log and temp files.", self); success = False
+        except Exception as e:
+            error_message = f"Unexpected bulk workflow error: {type(e).__name__}: {e}"
+            self.after(0, self.log_status, f"FATAL BULK WORKFLOW ERROR: {error_message}\n{traceback.format_exc()}", "error")
+            # The show_error_dialog call doesn't need 'level' and is correct
+            self.after(0, show_error_dialog, "Bulk Workflow Error", f"Unexpected error:\n{e}\nCheck log.", self)
+            success = False
         finally:
             # Cleanup uploaded files
             for pdf_p, uri in uploaded_file_uris.items():

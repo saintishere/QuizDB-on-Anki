@@ -149,7 +149,7 @@ Your *entire* output MUST be a single, valid JSON array (`[...]`). Each element 
 Now, analyze the provided text content applying these rules rigorously. Focus on accurately identifying and extracting pre-existing Q&A pairs verbatim, formatting them strictly as the specified JSON array. Generate ONLY the structured JSON array
 """
 
-BATCH_TAGGING ="""You are an expert quiz question classifier. Your task is to analyze quiz question and answer pairs and generate relevant tags for each question from a predefined list of categories.
+BATCH_TAGGING="""You are an expert quiz question classifier. Your task is to analyze quiz question and answer pairs and generate relevant tags for each question from a predefined list of categories.
 
 Instructions:
 
@@ -157,7 +157,7 @@ Instructions:
 2. For each question, select relevant tags from the provided "Reference Document" categories (implicitly understood to be the list you provided previously).
 3. Output ONLY the tags for each question as a space-separated list.
 4. Structure your response STRICTLY as a numbered list, with each line corresponding to an input item.  Begin each line with the item number in square brackets, followed by the space-separated tags.  *Do not include any text other than the item number and the tags.*
-
+**CRITICAL ADHERENCE RULE:** You MUST select tags *exclusively* from the lists provided within the "Reference Document" section below. Do NOT under any circumstances generate tags, variations of tags, or categories that are not explicitly listed. Output only the exact tag strings provided.
 **Example Output Format:**
 
 [1] tag1 tag2 tag3
@@ -165,6 +165,7 @@ Instructions:
 [3] tag6 tag7 tag8 tag9
 ... and so on for each item in the batch.
 
+The ONLY valid tags you can use are those listed below. Do not extrapolate, create new ones, or use tags similar but not identical to the ones provided.
 **Reference Document:** You HAVE to pick one category from between the {} flower brackets. Do NOT wrap the tags in flower brackets, just pick from between the brackets.
 For each question you will determine
 
@@ -536,6 +537,8 @@ Make sure that at last one tag from the following set is chosen.
 #Modifiers::Worth-Asking-Because::Has-An-Inspiration-Or-Derivation-From-Something-Else
 #Modifiers::Worth-Asking-Because::Is-Unique-Rare-Special-Of-Exceptional-In-Some-Way
 }
+
+**IMPORTANT:** If a question does not clearly fit any tag within a specific category ({...}) from the list, DO NOT generate a tag for that category for that question. It is better to omit a tag than to create one not on the list. Ensure every tag you output matches a tag in the list EXACTLY.
 
 Here are mini-essays describing the aspects covered by each tag:
 
@@ -2699,6 +2702,3 @@ This tag applies when the question highlights an interesting connection where th
 
 **#Modifiers::Worth-Asking-Because::Is-Unique-Rare-Special-Of-Exceptional-In-Some-Way**
 This tag applies when the subject of the question stands out due to its uniqueness, rarity, exceptional quality, unusual characteristics, or singular nature, making it inherently interesting. Example: Asking about the Komodo dragon (unique location/size) or a specific scientific anomaly. """
-
-
-# Add other prompts as needed

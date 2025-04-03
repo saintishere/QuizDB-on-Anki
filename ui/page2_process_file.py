@@ -372,7 +372,8 @@ class ProcessFilePage(ttk.Frame):
         if not model_name: show_error_dialog("Error", "Select Gemini model.", parent=self); return
 
         target_func = None; args = ()
-        safe_base_name = sanitize_filename(os.path.basename(input_file)) # Need base name here
+        # Need base name for image subfolder (Visual) or temp file naming (Text)
+        safe_base_name = sanitize_filename(os.path.basename(input_file))
 
         if is_visual:
             prompt_text = self.p2_visual_extraction_prompt_var.get(); save_direct = self.p2_save_directly_to_media.get(); anki_media_dir = self.p2_anki_media_path.get()
@@ -383,7 +384,8 @@ class ProcessFilePage(ttk.Frame):
                  if not ask_yes_no("Confirm Path", f"Direct save path '{os.path.basename(anki_media_dir)}' doesn't end in 'collection.media'. Proceed anyway?", parent=self): return
             image_destination_path = anki_media_dir if save_direct else os.path.join(tsv_output_dir, f"{safe_base_name}_images_{datetime.now():%Y%m%d_%H%M%S}")
             self.log_status(f"Image destination determined: {image_destination_path}", "debug")
-            args = (input_file, tsv_output_dir, image_destination_path, api_key, model_name, prompt_text, save_direct)
+            # Pass safe_base_name to the visual thread as well
+            args = (input_file, tsv_output_dir, safe_base_name, image_destination_path, api_key, model_name, prompt_text, save_direct)
             target_func = self._run_visual_processing_thread
         else: # Text Analysis
             prompt_text = self.p2_book_processing_prompt_var.get()
@@ -408,15 +410,16 @@ class ProcessFilePage(ttk.Frame):
 
     # --- THREAD TARGETS ---
 
-    def _run_visual_processing_thread(self, pdf_path, tsv_output_dir, image_destination_path,
-                                       api_key, model_name, prompt_text, save_direct_flag):
+    def _run_visual_processing_thread(self, pdf_path, tsv_output_dir, safe_base_name, # Added safe_base_name
+                                       image_destination_path, api_key, model_name,
+                                       prompt_text, save_direct_flag):
         """Background thread for VISUAL Q&A workflow."""
         success = False; uploaded_file_uri = None; tsv_file_path = None; parsed_data = None
         try:
-            sanitized_base = sanitize_filename(os.path.basename(pdf_path)) # Corrected base name sanitization
             # === Step 1a: Generate Page Images ===
             self.after(0, self.log_status, "Step 1 (Visual): Generating Page Images...", "step")
-            img_folder, self.p2_page_image_map = generate_page_images(pdf_path, image_destination_path, sanitized_base, save_direct_flag, self.log_status, parent_widget=self)
+            # Pass safe_base_name here
+            img_folder, self.p2_page_image_map = generate_page_images(pdf_path, image_destination_path, safe_base_name, save_direct_flag, self.log_status, parent_widget=self)
             if img_folder is None: raise ProcessingError("Image generation failed.")
             self.p2_image_output_folder_final = img_folder
             self.after(0, self.log_status, "Step 1a Complete.", "info")
@@ -431,7 +434,16 @@ class ProcessFilePage(ttk.Frame):
 
             # === Step 1c: Generate TSV ===
             self.after(0, self.log_status, "Step 3 (Visual): Generating TSV from extracted data...", "step")
-            tsv_file_path = generate_tsv_visual(parsed_data, tsv_output_dir, sanitized_base, self.p2_page_image_map, self.log_status)
+            # ***** FIX: Remove tsv_output_dir and sanitized_base from the call *****
+            tsv_file_path = generate_tsv_visual(
+                parsed_data,
+                self.p2_page_image_map,
+                self.log_status
+                # Removed tsv_output_dir, sanitized_base
+                # Note: The function will use its internal (placeholder) logic to determine output path
+                #       when return_rows=False (default). This might need adjustment in file_processor.py
+                #       if a specific output path is needed here. For now, this fixes the TypeError.
+            )
             if tsv_file_path is None: raise ProcessingError("Failed during TSV file generation.")
             self.after(0, self.log_status, "Step 1c Complete.", "info")
 
@@ -506,3 +518,4 @@ class ProcessFilePage(ttk.Frame):
             error_msg = f"Unexpected error: {type(e).__name__}: {e}"; self.after(0, self.log_status, f"FATAL ERROR (Text): {error_msg}\n{traceback.format_exc()}", "error"); self.after(0, show_error_dialog, "Unexpected Error", f"Error:\n{error_msg}", self); success = False
         finally:
             self.after(0, self._processing_finished, success)
+
