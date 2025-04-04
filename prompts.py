@@ -1,6 +1,6 @@
 # prompts.py
 
-VISUAL_EXTRACTION ="""PROMPT: You are an expert AI assistant specialized in extracting structured data from visual documents (PDFs), particularly quiz formats. Your task is to analyze the provided PDF page by page, identify distinct Question/Answer pairs, and format them STRICTLY as a JSON array of objects.
+VISUAL_EXTRACTION = """PROMPT: You are an expert AI assistant specialized in extracting structured data from visual documents (PDFs), particularly quiz formats. Your task is to analyze the provided PDF page by page, identify distinct Question/Answer pairs, and format them STRICTLY as a JSON array of objects.
 
 **Input:** A PDF document, likely a quiz presentation. These can follow different formats:
     *   **Prelims Style:** Questions and their corresponding answers often appear on *separate but consecutive* slides/pages without any buffer. Careful analysis is needed to separate question context from answer context.
