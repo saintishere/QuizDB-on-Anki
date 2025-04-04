@@ -16,7 +16,6 @@ from ..utils.helpers import show_error_dialog, show_info_dialog, sanitize_filena
 from ..core.file_processor import generate_tsv_from_json_data
 # Import tagging function from gemini_api
 from ..core.gemini_api import tag_tsv_rows_gemini, configure_gemini
-# --- Removed the try...except ImportError block ---
 
 
 class TagTsvPage(ttk.Frame):
@@ -132,7 +131,7 @@ class TagTsvPage(ttk.Frame):
         self.p3_prompt_frame_pass2.grid_rowconfigure(0, weight=1); self.p3_prompt_frame_pass2.grid_columnconfigure(0, weight=1)
         self.p3_second_pass_prompt_editor = scrolledtext.ScrolledText(self.p3_prompt_frame_pass2, height=8, wrap=tk.WORD, state="disabled")
         self.p3_second_pass_prompt_editor.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
-        self.p3_second_pass_prompt_editor.insert(tk.END, self.p3_second_pass_prompt_var.get())
+        self.p3_second_pass_prompt_editor.insert(tk.END, self.p3_second_pass_prompt_var.get()) # Initial insert
         self.p3_second_pass_prompt_editor.bind("<<Modified>>", self._sync_prompt_var_from_editor_p3_tag_pass2)
 
         # --- Status Frame ---
@@ -147,8 +146,7 @@ class TagTsvPage(ttk.Frame):
         self.p3_process_button.pack(side=tk.RIGHT, padx=5, pady=5)
         # --- End of UI Building ---
 
-    # --- Methods specific to Page 3 (Logging, UI Updates, File Selection, Threads) ---
-    # --- No changes needed in the logic of these methods, only the imports at the top were fixed ---
+    # --- Methods specific to Page 3 ---
 
     def log_status(self, message, level="info"):
         """Logs messages to the status label on this page."""
@@ -157,11 +155,10 @@ class TagTsvPage(ttk.Frame):
                 prefix_map = {"info": "", "step": "", "warning": "WARN: ", "error": "ERROR: ", "debug": "DEBUG: "}
                 prefix = prefix_map.get(level, "")
                 timestamp = datetime.now().strftime("%H:%M:%S")
-                # Keep message relatively short for the label
-                short_message = message.split('\n')[0] # Get first line
+                short_message = message.split('\n')[0]
                 short_message = short_message[:100] + "..." if len(short_message) > 100 else short_message
                 self.p3_status_label.config(text=f"{timestamp} {prefix}{short_message}")
-                self.update_idletasks() # Ensure UI updates
+                self.update_idletasks()
         except tk.TclError:
             print(f"P3 Log Warning: Could not update status label ({message})")
         except Exception as e:
@@ -173,9 +170,8 @@ class TagTsvPage(ttk.Frame):
              if hasattr(self, 'p3_system_prompt_editor') and self.p3_system_prompt_editor.winfo_exists():
                  current_text = self.p3_system_prompt_editor.get("1.0", tk.END).strip()
                  self.p3_system_prompt_text.set(current_text)
-                 self.p3_system_prompt_editor.edit_modified(False) # Reset modified flag
-         except tk.TclError:
-             pass # Ignore error if widget is destroyed
+                 self.p3_system_prompt_editor.edit_modified(False)
+         except tk.TclError: pass
 
     def _sync_prompt_var_from_editor_p3_tag_pass2(self, event=None):
         """Syncs Pass 2 prompt editor content to its variable."""
@@ -184,26 +180,19 @@ class TagTsvPage(ttk.Frame):
             if widget and widget.winfo_exists():
                 current_text = widget.get("1.0", tk.END).strip()
                 self.p3_second_pass_prompt_var.set(current_text)
-                widget.edit_modified(False) # Reset modified flag
-        except tk.TclError:
-            pass # Ignore error if widget is destroyed
+                widget.edit_modified(False)
+        except tk.TclError: pass
 
     def _browse_input_file(self):
         """Opens file dialog to select input JSON file."""
-        # Prioritize JSON files, allow Text as fallback (might be useful)
         file_path = filedialog.askopenfilename(
              parent=self, title="Select Input JSON File",
              filetypes=[("JSON files", "*.json"), ("Text files", "*.txt"), ("All files", "*.*")]
         )
         if file_path:
-            # Check if the selected file is actually JSON
             if not file_path.lower().endswith(".json"):
-                # Optionally allow TXT if it contains valid JSON, but warn?
-                # For now, strictly enforce JSON extension for clarity.
                 show_error_dialog("Invalid File Type", "Please select a JSON file (.json) containing the Q&A data.", parent=self)
                 return
-
-            # Update the entry widget (which should be readonly)
             self.p3_input_file_entry.config(state='normal')
             self.p3_input_file_var.set(file_path)
             self.p3_input_file_entry.config(state='readonly')
@@ -218,26 +207,33 @@ class TagTsvPage(ttk.Frame):
         new_state_combo = 'readonly' if is_enabled else tk.DISABLED
 
         try:
-            # Toggle Label State
             if hasattr(self, 'p3_second_pass_model_label'):
-                # Need to use config for tk.Label state
                 self.p3_second_pass_model_label.config(state=new_state_widget)
-
-            # Toggle Combobox State
             if hasattr(self, 'p3_second_pass_model_dropdown'):
                 self.p3_second_pass_model_dropdown.config(state=new_state_combo)
 
-            # Toggle Prompt Frame Visibility and Editor State
-            if hasattr(self, 'p3_prompt_frame_pass2') and self.p3_prompt_frame_pass2.winfo_exists():
+            editor = getattr(self, 'p3_second_pass_prompt_editor', None)
+            frame = getattr(self, 'p3_prompt_frame_pass2', None)
+
+            if frame and frame.winfo_exists():
                  if is_enabled:
-                     self.p3_prompt_frame_pass2.grid() # Show frame
+                     if not frame.winfo_ismapped():
+                         frame.grid(row=1, column=0, padx=0, pady=(5,0), sticky="nsew") # Ensure it's visible
+                     if editor and editor.winfo_exists():
+                         editor.config(state=tk.NORMAL)
+                         # --- Force text update ---
+                         editor.delete('1.0', tk.END)
+                         editor.insert('1.0', self.p3_second_pass_prompt_var.get())
+                         editor.edit_modified(False) # Reset modified flag after insert
+                         # --- End force text update ---
                  else:
-                     self.p3_prompt_frame_pass2.grid_remove() # Hide frame
+                     if frame.winfo_ismapped():
+                         frame.grid_remove() # Hide frame
+                     if editor and editor.winfo_exists():
+                         editor.config(state=tk.DISABLED)
 
-            if hasattr(self, 'p3_second_pass_prompt_editor'):
-                self.p3_second_pass_prompt_editor.config(state=new_state_widget)
-
-            self.log_status(f"Second Tagging Pass {'Enabled' if is_enabled else 'Disabled'}.", "info")
+            # Avoid logging during initial setup if possible, or make it less intrusive
+            # self.log_status(f"Second Tagging Pass {'Enabled' if is_enabled else 'Disabled'}.", "info")
         except tk.TclError as e:
             print(f"P3 Toggle Second Pass Warning: {e}")
         except AttributeError as e:
@@ -301,7 +297,7 @@ class TagTsvPage(ttk.Frame):
         base_name_input = os.path.splitext(os.path.basename(input_file))[0]
         # Clean up potential suffixes from previous steps for a cleaner final name
         base_name = base_name_input
-        suffixes_to_remove = ["_extracted", "_visual_extract_temp_results", "_text_analysis_temp_results", "_text_analysis_final", "_visual_extract"]
+        suffixes_to_remove = ["_extracted", "_visual_extract_temp_results", "_text_analysis_temp_results", "_text_analysis_final", "_visual_extract", "_intermediate_visual", "_intermediate_analysis"]
         for suffix in suffixes_to_remove:
             if base_name.endswith(suffix):
                 base_name = base_name[:-len(suffix)]
@@ -387,10 +383,10 @@ class TagTsvPage(ttk.Frame):
             self.after(0, self.log_status, "Step 1: Tagging Pass 1...", "step")
             self.after(0, self._update_progress_bar, 5) # Initial progress
 
-            # Use the refactored tag_tsv_rows_gemini which now handles JSON input
-            # It yields tagged rows (dictionaries)
+            # *** Call the MODIFIED tag_tsv_rows_gemini ***
+            # It now takes the list of dicts directly
             tagged_data_p1_generator = tag_tsv_rows_gemini(
-                [{}]+input_qa_data, # Simulate header+data structure expected by tagger
+                input_qa_data, # Pass the list of dicts directly
                 api_key, model_name_pass1, system_prompt_pass1,
                 batch_size, api_delay, self.log_status,
                 # Update progress for pass 1 (0% to 50% or 0% to 90% if only 1 pass)
@@ -401,18 +397,18 @@ class TagTsvPage(ttk.Frame):
                 enable_second_pass=False # This call is specifically for Pass 1
             )
 
-            # Collect results from generator
-            tagged_data_p1 = list(tagged_data_p1_generator)
-            # Check if generator yielded anything other than header
-            if len(tagged_data_p1) <= 1 and len(input_qa_data) > 0 :
-                 # Check for specific error marker if possible, otherwise assume failure
-                 if tagged_data_p1 and isinstance(tagged_data_p1[0], list) and "ERROR:" in str(tagged_data_p1[0]):
-                      raise Exception(f"Tagging Pass 1 failed: {tagged_data_p1[0]}")
-                 else:
-                      raise Exception("Tagging Pass 1 failed (returned no data). Check logs.")
+            # Collect results (header + tagged dicts) from generator
+            tagged_data_p1_with_header = list(tagged_data_p1_generator)
 
-            # Remove the dummy header row added earlier
-            tagged_data_p1_actual = tagged_data_p1[1:]
+            # Basic check for validity (should have header + data)
+            if len(tagged_data_p1_with_header) < 1: # Check if at least header was yielded
+                 raise Exception("Tagging Pass 1 failed (generator yielded nothing). Check logs.")
+            elif len(tagged_data_p1_with_header) == 1 and len(input_qa_data) > 0:
+                 # Only header yielded, likely an error occurred during first batch
+                 raise Exception("Tagging Pass 1 failed (only header yielded). Check logs.")
+
+            # Extract actual data (skip header)
+            tagged_data_p1_actual = tagged_data_p1_with_header[1:]
             tagging_pass1_success = True # Assume success if no exception
 
             # Save Pass 1 intermediate JSON
@@ -432,7 +428,7 @@ class TagTsvPage(ttk.Frame):
                 self.after(0, self.log_status, "Step 2: Tagging Pass 2...", "step")
 
                 tagged_data_p2_generator = tag_tsv_rows_gemini(
-                    [{}]+tagged_data_p1_actual, # Input is Pass 1 data (with dummy header)
+                    tagged_data_p1_actual, # Input is Pass 1 data (list of dicts)
                     api_key, model_name_pass2, system_prompt_pass2,
                     batch_size, api_delay, self.log_status,
                     # Update progress for pass 2 (50% to 90%)
@@ -444,14 +440,13 @@ class TagTsvPage(ttk.Frame):
                 )
 
                 # Collect results from generator
-                tagged_data_p2 = list(tagged_data_p2_generator)
-                if len(tagged_data_p2) <= 1:
-                     if tagged_data_p2 and isinstance(tagged_data_p2[0], list) and "ERROR:" in str(tagged_data_p2[0]):
-                          raise Exception(f"Tagging Pass 2 failed: {tagged_data_p2[0]}")
-                     else:
-                          raise Exception("Tagging Pass 2 failed (returned no data). Check logs.")
+                tagged_data_p2_with_header = list(tagged_data_p2_generator)
+                if len(tagged_data_p2_with_header) < 1:
+                     raise Exception("Tagging Pass 2 failed (generator yielded nothing). Check logs.")
+                elif len(tagged_data_p2_with_header) == 1 and len(tagged_data_p1_actual) > 0:
+                     raise Exception("Tagging Pass 2 failed (only header yielded). Check logs.")
 
-                tagged_data_p2_actual = tagged_data_p2[1:] # Remove dummy header
+                tagged_data_p2_actual = tagged_data_p2_with_header[1:] # Remove header
                 tagging_pass2_success = True
 
                 # Save Pass 2 intermediate JSON
@@ -468,10 +463,10 @@ class TagTsvPage(ttk.Frame):
 
             # --- Final TSV Generation ---
             self.after(0, self.log_status, "Step 3: Generating Final TSV...", "step")
-            if not final_data_to_convert: # Should not happen if input was not empty
+            if final_data_to_convert is None: # Check if data exists (e.g., if Pass 1 failed and Pass 2 skipped)
                 raise Exception("No final tagged data available for TSV conversion.")
 
-            # Use the NEW generic TSV generator function
+            # Use the generic JSON to TSV generator function
             tsv_success = generate_tsv_from_json_data(final_data_to_convert, final_tsv_output_path, self.log_status)
             if not tsv_success:
                 raise Exception("Failed to generate final TSV file.")
@@ -490,7 +485,7 @@ class TagTsvPage(ttk.Frame):
         finally:
             # Optionally clean up intermediate JSON files if successful
             if success:
-                if os.path.exists(intermediate_json_p1_path):
+                if intermediate_json_p1_path and os.path.exists(intermediate_json_p1_path):
                     try: os.remove(intermediate_json_p1_path); self.after(0, self.log_status, f"Cleaned up {os.path.basename(intermediate_json_p1_path)}", "debug")
                     except Exception as rem_e: self.after(0, self.log_status, f"Could not remove {os.path.basename(intermediate_json_p1_path)}: {rem_e}", "warning")
                 if intermediate_json_p2_path and os.path.exists(intermediate_json_p2_path):
