@@ -3,28 +3,17 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import os
 import traceback
+# Corrected import: Use relative import for constants within the package
+from . import constants
 
-# Import constants and utilities using relative paths
-try:
-    from .constants import DEFAULT_GEMINI_API_KEY, PYMUPDF_INSTALLED
-    from .utils.helpers import check_pymupdf_and_warn, show_error_dialog
-    # Import core modules used by the main app (e.g., for initial load)
-    from .core.anki_connect import load_anki_data, ProcessingError as AnkiProcessingError
-    # Import UI Pages
-    from .ui.page1_anki_export import AnkiExportPage
-    from .ui.page2_process_file import ProcessFilePage
-    from .ui.page3_tag_tsv import TagTsvPage
-    from .ui.page4_workflow import WorkflowPage
-except ImportError as e:
-    print(f"Error importing modules in main: {e}. Trying direct imports (might fail if not run as module).")
-    # Fallback for direct execution (less ideal)
-    from constants import DEFAULT_GEMINI_API_KEY, PYMUPDF_INSTALLED
-    from utils.helpers import check_pymupdf_and_warn, show_error_dialog
-    from core.anki_connect import load_anki_data, ProcessingError as AnkiProcessingError
-    from ui.page1_anki_export import AnkiExportPage
-    from ui.page2_process_file import ProcessFilePage
-    from ui.page3_tag_tsv import TagTsvPage
-    from ui.page4_workflow import WorkflowPage
+# Use only relative imports for package components
+from .constants import DEFAULT_GEMINI_API_KEY, PYMUPDF_INSTALLED
+from .utils.helpers import check_pymupdf_and_warn, show_error_dialog
+from .core.anki_connect import load_anki_data, ProcessingError as AnkiProcessingError
+from .ui.page1_anki_export import AnkiExportPage
+from .ui.page2_process_file import ProcessFilePage
+from .ui.page3_tag_tsv import TagTsvPage
+from .ui.page4_workflow import WorkflowPage
 
 
 class AnkiTagProcessorApp(tk.Tk):
@@ -34,16 +23,14 @@ class AnkiTagProcessorApp(tk.Tk):
         self.geometry("1200x900")
 
         # --- Shared State Variables ---
-        # Keep StringVars etc. here if multiple pages need to react to them directly
-        # Or manage state within pages and use app methods for coordination.
-        self.gemini_api_key = tk.StringVar(value=DEFAULT_GEMINI_API_KEY)
+        # Access constants via the imported module object
+        self.gemini_api_key = tk.StringVar(value=constants.DEFAULT_GEMINI_API_KEY)
         # Anki data (loaded once)
         self.anki_decks = []
         self.anki_tags = []
         self.anki_note_types = {} # {modelName: [field1, field2]}
 
         # --- PyMuPDF Check ---
-        # Check PyMuPDF early, before initializing pages that might depend on it
         check_pymupdf_and_warn(parent_widget=self) # Show initial warning if missing
 
         # --- Load Initial Anki Data ---
@@ -54,7 +41,6 @@ class AnkiTagProcessorApp(tk.Tk):
         self.notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
         # --- Instantiate Pages ---
-        # Pass the notebook as master and self (app instance) for shared access
         try:
             self.page1 = AnkiExportPage(self.notebook, self)
             self.page2 = ProcessFilePage(self.notebook, self)
@@ -62,8 +48,7 @@ class AnkiTagProcessorApp(tk.Tk):
             self.page4 = WorkflowPage(self.notebook, self)
         except Exception as page_init_e:
              show_error_dialog("Page Initialization Error", f"Failed to initialize UI pages:\n{page_init_e}", parent=self)
-             # Optionally destroy the window if pages fail to load
-             # self.destroy()
+             # self.destroy() # Optionally destroy
              return # Stop initialization
 
         # --- Add Pages to Notebook ---
@@ -72,10 +57,9 @@ class AnkiTagProcessorApp(tk.Tk):
         self.notebook.add(self.page3, text="3: Tag TSV File")
         self.notebook.add(self.page4, text="4: Workflow (File->TSV->Tag)")
 
-        # Update pages that might need initial Anki data *after* they are created
+        # Update pages that might need initial Anki data
         if hasattr(self.page1, 'update_anki_data'):
              self.page1.update_anki_data(self.anki_decks, self.anki_tags, self.anki_note_types)
-        # Add similar updates for other pages if needed
 
     def _load_initial_anki_data(self):
         """Loads data from AnkiConnect and stores it in app variables."""
@@ -95,8 +79,6 @@ class AnkiTagProcessorApp(tk.Tk):
     def toggle_api_key_visibility(self):
         """Toggles visibility of API key entries across all relevant pages."""
         widgets_to_toggle = []
-        # Access page widgets safely using getattr with default None
-        # Check if page exists before accessing its attributes
         if hasattr(self, 'page2') and hasattr(self.page2, 'p2_api_key_entry'): widgets_to_toggle.append(self.page2.p2_api_key_entry)
         if hasattr(self, 'page3') and hasattr(self.page3, 'p3_api_key_entry'): widgets_to_toggle.append(self.page3.p3_api_key_entry)
         if hasattr(self, 'page4') and hasattr(self.page4, 'p4_wf_api_key_entry'): widgets_to_toggle.append(self.page4.p4_wf_api_key_entry)
@@ -104,17 +86,13 @@ class AnkiTagProcessorApp(tk.Tk):
         if not widgets_to_toggle: return
 
         try:
-            # Use the first widget found to determine current state
             current_show = widgets_to_toggle[0].cget('show')
             new_show = '' if current_show == '*' else '*'
             for widget in widgets_to_toggle:
-                # Check if widget still exists before configuring
                 if widget and widget.winfo_exists():
                      widget.config(show=new_show)
-        except tk.TclError:
-             print("Warning: Could not toggle API key visibility (widget might not exist yet).")
-        except Exception as e:
-            print(f"Error toggling key visibility: {e}")
+        except tk.TclError: print("Warning: Could not toggle API key visibility.")
+        except Exception as e: print(f"Error toggling key visibility: {e}")
 
     def switch_to_page(self, page_index, file_path=None):
         """Switches notebook to the specified page and optionally sets a file path."""
@@ -128,49 +106,38 @@ class AnkiTagProcessorApp(tk.Tk):
                         target_page.p3_input_file_var.set(file_path)
                         if hasattr(target_page, 'log_status'):
                             target_page.log_status(f"Loaded input file: {os.path.basename(file_path)}")
-            # Add elif for other pages if needed
-            # elif page_index == 1: # Page 2 (Process File)
-            #    if hasattr(self, 'page2'):
-            #        target_page = self.page2
-            #        # Add logic to pass data if needed
 
             if target_page:
                 self.notebook.select(page_index)
-                # Optionally trigger refresh or focus on the target page
-                target_page.focus_set() # Or call a specific update method if needed
-            else:
-                 print(f"Error switching page: Target page for index {page_index} not found or not initialized.")
+                target_page.focus_set()
+            else: print(f"Error switching page: Target page for index {page_index} not found.")
 
-        except tk.TclError as e:
-            print(f"Error switching page: {e}")
-        except Exception as e:
-            print(f"Unexpected error during page switch: {e}")
+        except tk.TclError as e: print(f"Error switching page: {e}")
+        except Exception as e: print(f"Unexpected error during page switch: {e}")
 
 # ==========================================================================
 # Main Execution Block
 # ==========================================================================
 if __name__ == "__main__":
-    # It's crucial that the script is run from the directory *containing* AnkiTagProcessor
-    # OR that AnkiTagProcessor's parent directory is in PYTHONPATH for relative imports to work.
-    # If running directly, the fallback direct imports might work if structure is flat.
+    # IMPORTANT: Run this script as a module from the PARENT directory
+    # Example: python -m AnkiTagProcessor.AnkiTagProcessor_main
     try:
         app = AnkiTagProcessorApp()
         app.mainloop()
     except Exception as main_e:
-        # Use the utility function for consistency
-        # Need to handle potential import error for show_error_dialog itself
         try:
-            # Attempt to use the helper function
-            show_error_dialog("Fatal Error", f"Application crashed:\n{main_e}")
-        except NameError: # If show_error_dialog wasn't imported due to earlier errors
-             print("FATAL ERROR (show_error_dialog not available): Application crashed.")
-             print(f"{main_e}\n{traceback.format_exc()}")
-             # Fallback Tkinter message box
-             try:
-                 root = tk.Tk(); root.withdraw()
-                 messagebox.showerror("Fatal Error", f"Application crashed:\n{main_e}")
-                 root.destroy()
-             except Exception: pass # Ignore errors in fallback messagebox
-        except Exception as dialog_e: # Catch errors within show_error_dialog itself
+            # Attempt to use the helper function if imported successfully
+            # Need to make sure show_error_dialog is accessible here if needed
+            # It might be better to handle this import within the except block
+            # or ensure helpers is imported earlier if needed globally.
+            # For now, assuming show_error_dialog might not be loaded if init fails early.
+            print(f"FATAL ERROR in main execution: {main_e}\n{traceback.format_exc()}")
+            try: # Fallback Tkinter message box
+                root = tk.Tk(); root.withdraw()
+                messagebox.showerror("Fatal Error", f"Application crashed:\n{main_e}")
+                root.destroy()
+            except Exception: pass # Ignore errors in fallback
+        except Exception as dialog_e: # Catch errors within the error handling itself
              print(f"Error showing dialog: {dialog_e}")
              print(f"Original Fatal Error: {main_e}\n{traceback.format_exc()}")
+

@@ -22,16 +22,16 @@ try:
 except ImportError:
     # Fallback for direct execution or different structure
     print("Error: Relative imports failed in page2_process_file.py. Using direct imports.")
-    from constants import (DEFAULT_VISUAL_MODEL, VISUAL_CAPABLE_MODELS, DEFAULT_MODEL,
+    from ..constants import (DEFAULT_VISUAL_MODEL, VISUAL_CAPABLE_MODELS, DEFAULT_MODEL,
                          DEFAULT_VISUAL_EXTRACTION_PROMPT, DEFAULT_BOOK_PROCESSING_PROMPT,
                          PYMUPDF_INSTALLED, GEMINI_UNIFIED_MODELS)
-    from utils.helpers import (ProcessingError, WorkflowStepError, sanitize_filename,
+    from ..utils.helpers import (ProcessingError, WorkflowStepError, sanitize_filename,
                                show_error_dialog, show_info_dialog, ask_yes_no)
-    from core.anki_connect import detect_anki_media_path, guess_anki_media_initial_dir
-    from core.file_processor import (generate_page_images, extract_text_from_pdf,
+    from ..core.anki_connect import detect_anki_media_path, guess_anki_media_initial_dir
+    from ..core.file_processor import (generate_page_images, extract_text_from_pdf,
                                     read_text_file, generate_tsv_visual,
                                     generate_tsv_text_analysis)
-    from core.gemini_api import (call_gemini_visual_extraction, call_gemini_text_analysis,
+    from ..core.gemini_api import (call_gemini_visual_extraction, call_gemini_text_analysis,
                                cleanup_gemini_file)
 
 

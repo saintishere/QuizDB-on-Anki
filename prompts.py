@@ -1424,6 +1424,20 @@ This tag applies when the question highlights an interesting connection where th
 
 **#Modifiers::Worth-Asking-Because::Is-Unique-Rare-Special-Of-Exceptional-In-Some-Way**
 This tag applies when the subject of the question stands out due to its uniqueness, rarity, exceptional quality, unusual characteristics, or singular nature, making it inherently interesting. Example: Asking about the Komodo dragon (unique location/size) or a specific scientific anomaly."""
+
+# ==============================================================================
+#                       SECOND PASS TAGGING PROMPT (DUMMY)
+# ==============================================================================
+# TODO: Replace this with a proper prompt for refining/verifying tags based on Pass 1 output.
+# It should reference the ALLOWED_TAGS_SET implicitly or explicitly and instruct the model
+# to use the 'Initial Tags: ...' provided in the input.
+SECOND_PASS_TAGGING = """
+[DUMMY PROMPT - REPLACE LATER]
+Review the item and its initial tags. Output refined tags based on the allowed list.
+Format: [Item Number] refined_tag1 refined_tag2
+Allowed Tags: (Implicitly known from BATCH_TAGGING prompt)
+"""
+
 DEFAULT_WORKFLOW_EXTRACTION_PROMPT = "TO_BE_INSERTED_LATER" # Deprecated? Replaced by visual/book specific ones? Let's keep for now but tie to visual
 DEFAULT_WORKFLOW_TSV_PROMPT = "TO_BE_INSERTED_LATER" # Likely deprecated if P2 step 3/4 handle it.
 DEFAULT_WORKFLOW_TAGGING_PROMPT = """You are an expert quiz question classifier. Your task is to analyze quiz question and answer pairs and generate relevant tags for each question from a predefined list of categories.

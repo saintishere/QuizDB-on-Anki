@@ -12,8 +12,8 @@ try:
 except ImportError:
     # Fallback for direct execution or different structure
     print("Error: Relative imports failed in page1_anki_export.py. Using direct imports.")
-    from core.anki_connect import invoke_anki_connect, ProcessingError as AnkiProcessingError
-    from utils.helpers import show_error_dialog
+    from ..core.anki_connect import invoke_anki_connect, ProcessingError as AnkiProcessingError
+    from ..utils.helpers import show_error_dialog
 
 
 class AnkiExportPage(ttk.Frame):

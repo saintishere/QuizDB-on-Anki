@@ -15,9 +15,9 @@ try:
 except ImportError:
     # Fallback for direct execution
     print("Error: Relative imports failed in page3_tag_tsv.py. Using direct imports.")
-    from constants import DEFAULT_MODEL, GEMINI_UNIFIED_MODELS, DEFAULT_BATCH_TAGGING_PROMPT
-    from utils.helpers import show_error_dialog, show_info_dialog
-    from core.gemini_api import tag_tsv_rows_gemini, configure_gemini
+    from ..constants import DEFAULT_MODEL, GEMINI_UNIFIED_MODELS, DEFAULT_BATCH_TAGGING_PROMPT
+    from ..utils.helpers import show_error_dialog, show_info_dialog
+    from ..core.gemini_api import tag_tsv_rows_gemini, configure_gemini
 
 class TagTsvPage(ttk.Frame):
     def __init__(self, master, app_instance, **kwargs):

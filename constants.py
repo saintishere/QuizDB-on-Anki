@@ -1,6 +1,6 @@
 # constants.py
 import os
-import prompts # Keep prompts accessible here too
+# Keep prompts accessible here too - Use relative import within the function
 
 # --- Gemini API ---
 DEFAULT_GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "YOUR_API_KEY_HERE")
@@ -21,6 +21,11 @@ DEFAULT_VISUAL_MODEL = "gemini-2.0-flash"
 if DEFAULT_VISUAL_MODEL not in VISUAL_CAPABLE_MODELS and VISUAL_CAPABLE_MODELS:
     DEFAULT_VISUAL_MODEL = VISUAL_CAPABLE_MODELS[0]
 
+# Default model for the optional second tagging pass
+DEFAULT_SECOND_PASS_MODEL = "gemini-2.0-flash" # Use a fast model by default
+if DEFAULT_SECOND_PASS_MODEL not in GEMINI_UNIFIED_MODELS and GEMINI_UNIFIED_MODELS:
+    DEFAULT_SECOND_PASS_MODEL = GEMINI_UNIFIED_MODELS[0] # Fallback if default isn't listed
+
 GEMINI_SAFETY_SETTINGS = [
     {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
     {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -30,10 +35,10 @@ GEMINI_SAFETY_SETTINGS = [
 
 # --- Default Prompts ---
 def get_default_prompt(prompt_name, fallback_message):
+    """Safely gets a prompt string from the prompts module."""
     try:
-        # Ensure prompts is treated as a module relative to where constants is used
-        # This might need adjustment depending on how prompts.py is loaded/structured
-        import prompts
+        # Use relative import when running as part of the package
+        from . import prompts
         return getattr(prompts, prompt_name)
     except (AttributeError, ImportError) as e:
         print(f"Warning: {prompt_name} not found or prompts module error ({e}). Using placeholder.")
