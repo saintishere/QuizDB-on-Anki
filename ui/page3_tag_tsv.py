@@ -486,11 +486,16 @@ class TagTsvPage(ttk.Frame):
             # Optionally clean up intermediate JSON files if successful
             if success:
                 if intermediate_json_p1_path and os.path.exists(intermediate_json_p1_path):
-                    try: os.remove(intermediate_json_p1_path); self.after(0, self.log_status, f"Cleaned up {os.path.basename(intermediate_json_p1_path)}", "debug")
-                    except Exception as rem_e: self.after(0, self.log_status, f"Could not remove {os.path.basename(intermediate_json_p1_path)}: {rem_e}", "warning")
+                    # try: os.remove(intermediate_json_p1_path); self.after(0, self.log_status, f"Cleaned up {os.path.basename(intermediate_json_p1_path)}", "debug")
+                    # except Exception as rem_e: self.after(0, self.log_status, f"Could not remove {os.path.basename(intermediate_json_p1_path)}: {rem_e}", "warning")
+                    pass # ADDED: Placeholder for the now-empty 'if' block
                 if intermediate_json_p2_path and os.path.exists(intermediate_json_p2_path):
-                     try: os.remove(intermediate_json_p2_path); self.after(0, self.log_status, f"Cleaned up {os.path.basename(intermediate_json_p2_path)}", "debug")
-                     except Exception as rem_e: self.after(0, self.log_status, f"Could not remove {os.path.basename(intermediate_json_p2_path)}: {rem_e}", "warning")
+                     # try: os.remove(intermediate_json_p2_path); self.after(0, self.log_status, f"Cleaned up {os.path.basename(intermediate_json_p2_path)}", "debug")
+                     # except Exception as rem_e: self.after(0, self.log_status, f"Could not remove {os.path.basename(intermediate_json_p2_path)}: {rem_e}", "warning")
+                     pass # ADDED: Placeholder for the now-empty 'if' block
+
+            # This line MUST remain outside the commented section and 'if success' block
+            self.after(0, self._processing_finished, success)
 
             self.after(0, self._processing_finished, success)
 

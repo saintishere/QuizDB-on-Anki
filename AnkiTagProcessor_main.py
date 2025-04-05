@@ -20,7 +20,7 @@ class AnkiTagProcessorApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Anki Tag Processor (Refactored)")
-        self.geometry("1200x900")
+        self.geometry("1200x1000")
 
         # --- Shared State Variables ---
         # Access constants via the imported module object

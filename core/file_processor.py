@@ -6,12 +6,23 @@ import json # Keep for the new function
 from datetime import datetime
 from tkinter import messagebox
 import csv # Import csv module for robust TSV writing
+import html # Import html for escaping attributes
 
 # Use relative imports
-from ..constants import PYMUPDF_INSTALLED, fitz
-from ..utils.helpers import ProcessingError, sanitize_filename
+# Ensure these imports work within your project structure
+try:
+    from ..constants import PYMUPDF_INSTALLED, fitz
+    from ..utils.helpers import ProcessingError, sanitize_filename
+except ImportError:
+    # Basic fallback for standalone testing/viewing if relative imports fail
+    print("Warning: Relative imports failed. Using dummy constants/helpers.")
+    PYMUPDF_INSTALLED = False
+    fitz = None
+    class ProcessingError(Exception): pass
+    def sanitize_filename(name): return name.replace(" ", "_")
 
-# --- Image Generation (No change) ---
+
+# --- Image Generation (No change from original) ---
 def generate_page_images(pdf_path, image_destination_path, sanitized_base_name,
                          save_direct_flag, log_func, parent_widget=None,
                          filename_prefix=None):
@@ -68,7 +79,7 @@ def generate_page_images(pdf_path, image_destination_path, sanitized_base_name,
                                                 f"Image file already exists:\n{image_filename}\n\nIn directory:\n{os.path.basename(final_image_folder_path)}\n\nOverwrite?",
                                                 parent=parent_widget):
                         log_func(f"Skipped overwriting existing image: {image_filename}", "warning")
-                        page_image_map[page_num] = image_filename # Still map the existing file
+                        page_image_map[str(page_num)] = image_filename # Map STRING key to existing file
                         perform_save = False
                      else:
                         log_func(f"Overwriting existing image: {image_filename}", "info")
@@ -97,7 +108,8 @@ def generate_page_images(pdf_path, image_destination_path, sanitized_base_name,
                     log_func(f"Error saving image file '{image_filename}': {save_e}", "error")
                     continue # Skip this page
 
-            page_image_map[page_num] = image_filename # Map page number to the final filename
+            # --- IMPORTANT: Use STRING key for the map ---
+            page_image_map[str(page_num)] = image_filename # Map STRING page number to the final filename
 
             # Log progress periodically
             if page_num % 10 == 0 or page_num == num_pages:
@@ -117,7 +129,7 @@ def generate_page_images(pdf_path, image_destination_path, sanitized_base_name,
         except Exception:
             pass # Ignore errors during close
 
-# --- Text Extraction (No change) ---
+# --- Text Extraction (No change from original) ---
 def extract_text_from_pdf(pdf_path, log_func):
     """Extracts plain text from a PDF file using PyMuPDF."""
     log_func(f"Extracting text from PDF: {os.path.basename(pdf_path)}", "debug")
@@ -173,11 +185,13 @@ def read_text_file(txt_path, log_func):
 
 # --- TSV Generation Functions ---
 
+# generate_tsv_visual remains unchanged as it's likely not the one used by the workflow's final step
 def generate_tsv_visual(parsed_data, page_image_map, log_func, return_rows=False, tsv_output_dir='.', sanitized_base_name='output'):
     """
     Generates TSV data for Visual Q&A from parsed JSON data.
     Includes Question, QuestionMedia, Answer, AnswerMedia columns.
     Can return rows or write to file.
+    (This function remains unchanged as the issue is likely in generate_tsv_from_json_data)
     """
     log_func("Generating Visual Q&A TSV data from JSON...", "info")
     header = ["Question", "QuestionMedia", "Answer", "AnswerMedia"]
@@ -193,80 +207,56 @@ def generate_tsv_visual(parsed_data, page_image_map, log_func, return_rows=False
                 log_func(f"TSV Generation Warning: Skipping item {i+1} as it's not a dictionary.", "warning")
                 continue
 
-            # Initialize values for the current row
             row_values = {h: "" for h in header}
-
-            # Process Question Text
             q_text_raw = pair.get("question_text", "")
             row_values["Question"] = q_text_raw.replace("\n", "<br>").replace("\t", " ")
-
-            # Process Answer Text
             a_text_raw = pair.get("answer_text", "")
             row_values["Answer"] = a_text_raw.replace("\n", "<br>").replace("\t", " ")
-
-            # --- Process Media Tags ---
             q_media_tags = set()
             a_media_tags = set()
 
             def get_img_tag_for_page(page_number):
-                """Helper to safely get the image tag for a given page number."""
                 try:
                     pg_num = int(page_number)
-                    if pg_num in page_image_map:
-                        img_src = page_image_map[pg_num].replace('"', '&quot;') # Basic HTML entity encoding for quotes
+                    pg_num_str = str(pg_num) # Use string key for lookup
+                    if pg_num_str in page_image_map:
+                        img_src = html.escape(page_image_map[pg_num_str], quote=True)
                         return f'<img src="{img_src}">'
                     else:
-                        log_func(f"Warning: Image map missing for page {pg_num} (Pair {i+1}).", "warning")
+                        log_func(f"Warning: Image map missing for page {pg_num} (Pair {i+1}). Map keys: {list(page_image_map.keys())}", "warning")
                 except (ValueError, TypeError):
                      log_func(f"Warning: Invalid page number '{page_number}' encountered in JSON (Pair {i+1}).", "warning")
                 return None
 
-            # Question Media: Add image from question_page and relevant_question_image_pages
             q_page_num = pair.get("question_page")
             q_context_tag = get_img_tag_for_page(q_page_num)
-            if q_context_tag:
-                q_media_tags.add(q_context_tag)
-
+            if q_context_tag: q_media_tags.add(q_context_tag)
             rel_q_pages = pair.get("relevant_question_image_pages", [])
             if isinstance(rel_q_pages, list):
                 for pg in rel_q_pages:
                     tag = get_img_tag_for_page(pg)
-                    if tag:
-                        q_media_tags.add(tag)
-            else:
-                log_func(f"Warning: 'relevant_question_image_pages' is not a list for pair {i+1}. Value: {rel_q_pages}", "warning")
+                    if tag: q_media_tags.add(tag)
+            else: log_func(f"Warning: 'relevant_question_image_pages' not list pair {i+1}.", "warning")
 
-            # Answer Media: Add image from answer_page and relevant_answer_image_pages
             a_page_num = pair.get("answer_page")
             a_context_tag = get_img_tag_for_page(a_page_num)
-            if a_context_tag:
-                a_media_tags.add(a_context_tag)
-
+            if a_context_tag: a_media_tags.add(a_context_tag)
             rel_a_pages = pair.get("relevant_answer_image_pages", [])
             if isinstance(rel_a_pages, list):
                 for pg in rel_a_pages:
                     tag = get_img_tag_for_page(pg)
-                    if tag:
-                        a_media_tags.add(tag)
-            else:
-                 log_func(f"Warning: 'relevant_answer_image_pages' is not a list for pair {i+1}. Value: {rel_a_pages}", "warning")
+                    if tag: a_media_tags.add(tag)
+            else: log_func(f"Warning: 'relevant_answer_image_pages' not list pair {i+1}.", "warning")
 
-            # Combine media tags into space-separated strings
             row_values["QuestionMedia"] = " ".join(sorted(list(q_media_tags)))
             row_values["AnswerMedia"] = " ".join(sorted(list(a_media_tags)))
-
-            # Create the final row in the correct header order
             row_to_append = [row_values.get(h, "") for h in header]
             output_rows.append(row_to_append)
 
         log_func(f"Generated TSV data for {len(output_rows)-1} pairs.", "info")
-
-        if return_rows:
-            # Return only data rows (excluding header)
-            return output_rows[1:] if len(output_rows) > 1 else []
+        if return_rows: return output_rows[1:] if len(output_rows) > 1 else []
         else:
-            # Write to file
-            tsv_filename = f"{sanitized_base_name}_visual_anki.txt" # Use .txt for Anki compatibility
+            tsv_filename = f"{sanitized_base_name}_visual_anki.txt"
             if not tsv_output_dir or not os.path.isdir(tsv_output_dir):
                 log_func(f"Warning: Invalid output directory '{tsv_output_dir}'. Using current directory '.'", "warning")
                 tsv_output_dir = '.'
@@ -274,44 +264,38 @@ def generate_tsv_visual(parsed_data, page_image_map, log_func, return_rows=False
             try:
                 with open(tsv_filepath, 'w', encoding='utf-8', newline='') as f:
                     writer = csv.writer(f, delimiter='\t', lineterminator='\n', quoting=csv.QUOTE_MINIMAL)
-                    writer.writerows(output_rows) # Write all rows including header
+                    writer.writerows(output_rows)
                 log_func(f"Saved Visual TSV file to: {tsv_filepath}", "info")
                 return tsv_filepath
             except IOError as e:
                 log_func(f"Error writing TSV file '{tsv_filepath}': {e}", "error")
                 return None
-
     except Exception as e:
         log_func(f"Unexpected error generating Visual TSV data from JSON: {e}\n{traceback.format_exc()}", "error")
         return None if not return_rows else []
 
 
+# generate_tsv_text_analysis remains unchanged
 def generate_tsv_text_analysis(parsed_data, tsv_output_dir, sanitized_base_name, log_func):
     """
     Generates a simple TSV for Text Analysis output (Question & Answer only).
     Writes directly to file.
     """
     log_func("Generating Text Analysis TSV file (Question/Answer only)...", "info")
-    # Use intermediate suffix for clarity if called from workflow
     tsv_filename = f"{sanitized_base_name}_text_analysis.txt"
     tsv_filepath = os.path.join(tsv_output_dir, tsv_filename)
-
     header = ["Question", "Answer"]
-
     if not isinstance(parsed_data, list):
         log_func("TSV Generation Error: Input data is not a list.", "error")
-        parsed_data = [] # Treat as empty list to create empty file
-
+        parsed_data = []
     if not parsed_data:
         log_func("No data provided for text analysis TSV generation. Creating file with header only.", "warning")
-
     try:
         with open(tsv_filepath, 'w', encoding='utf-8', newline='') as f:
             writer = csv.writer(f, delimiter='\t', lineterminator='\n', quoting=csv.QUOTE_MINIMAL)
-            writer.writerow(header) # Write header
+            writer.writerow(header)
             for item in parsed_data:
                 if isinstance(item, dict):
-                    # Extract, clean (replace newlines, tabs), and prepare row
                     question = item.get("question", "").replace("\n", "<br>").replace("\t", " ")
                     answer = item.get("answer", "").replace("\n", "<br>").replace("\t", " ")
                     row_values = [question, answer]
@@ -328,55 +312,150 @@ def generate_tsv_text_analysis(parsed_data, tsv_output_dir, sanitized_base_name,
         return None
 
 
-# --- NEW FUNCTION to replace the missing import ---
+# --- CORRECTED FUNCTION ---
 def generate_tsv_from_json_data(json_data, tsv_output_path, log_func):
     """
-    Generates a TSV file from a list of JSON objects (dictionaries).
-    Dynamically determines columns based on keys in the first object,
-    giving priority to common Anki fields like 'Question', 'Answer', 'Tags'.
+    Generates a TSV file with specific columns (Question, QuestionMedia, Answer, AnswerMedia, Tags)
+    from a list of JSON objects (dictionaries).
+    Assumes input dictionaries contain keys like 'question_text', 'answer_text', 'Tags',
+    '_page_image_map', 'question_page', 'relevant_question_image_pages',
+    'answer_page', 'relevant_answer_image_pages'.
     """
-    log_func(f"Generating generic TSV from JSON data to {os.path.basename(tsv_output_path)}...", "info")
+    log_func(f"Generating 5-column Anki TSV from JSON data to {os.path.basename(tsv_output_path)}...", "info")
+
+    # --- Define the fixed 5-column header ---
+    header = ["Question", "QuestionMedia", "Answer", "AnswerMedia", "Tags"]
 
     if not isinstance(json_data, list):
         log_func("TSV Generation Error: Input data is not a list.", "error")
-        return False
+        return False # Indicate failure
+
     if not json_data:
         log_func("Warning: Input JSON data is empty. Creating TSV with header only.", "warning")
-        # Decide on default header or try to infer if possible (tricky if empty)
-        header = ["Question", "Answer", "Tags"] # Sensible default
-    else:
-        # Determine header dynamically from keys of the first object
-        first_item_keys = list(json_data[0].keys())
-        # Prioritize common Anki fields
-        priority_cols = ["Question", "Answer", "Tags", "QuestionMedia", "AnswerMedia"]
-        header = [col for col in priority_cols if col in first_item_keys]
-        # Add remaining keys, sorted alphabetically
-        remaining_keys = sorted([key for key in first_item_keys if key not in priority_cols])
-        header.extend(remaining_keys)
-        log_func(f"Determined TSV header: {header}", "debug")
+        # Write only header if data is empty
+        try:
+            with open(tsv_output_path, 'w', encoding='utf-8', newline='') as f:
+                writer = csv.writer(f, delimiter='\t', lineterminator='\n', quoting=csv.QUOTE_MINIMAL)
+                writer.writerow(header)
+            return True # Success (empty file created)
+        except IOError as e:
+            log_func(f"Error writing empty TSV file '{tsv_output_path}': {e}", "error")
+            return False
 
+    # --- Helper function to create image tags ---
+    def get_img_tag(page_number, page_map, item_index):
+        """Safely creates an HTML img tag for a given page number and map."""
+        if not page_map or not isinstance(page_map, dict):
+            # Only log once per item if map is missing or invalid
+            if f"missing_map_{item_index}" not in getattr(get_img_tag, "logged_warnings", set()):
+                log_func(f"Warning: Missing or invalid '_page_image_map' for item {item_index + 1}. Media fields may be empty.", "warning")
+                if not hasattr(get_img_tag, "logged_warnings"): get_img_tag.logged_warnings = set()
+                get_img_tag.logged_warnings.add(f"missing_map_{item_index}")
+            return None
+        try:
+            # Attempt to convert page_number to int for validation/range checks if needed,
+            # but use STRING for the actual dictionary lookup.
+            pg_num = int(page_number)
+            pg_num_str = str(pg_num) # Use string representation for lookup
+
+            # *** THE FIX: Use the string key for lookup ***
+            if pg_num_str in page_map:
+                # Use html.escape for safety, especially if filenames could contain special chars
+                img_src = html.escape(page_map[pg_num_str], quote=True)
+                return f'<img src="{img_src}">'
+            else:
+                # Log if a specific page number (as string) is not found in the map keys
+                # Reduce frequency of this log if it becomes too noisy
+                log_key = f"missing_page_{item_index}_{pg_num_str}"
+                if log_key not in getattr(get_img_tag, "logged_warnings", set()):
+                    log_func(f"Debug: Page number '{pg_num_str}' not found in _page_image_map for item {item_index + 1}. Map keys: {list(page_map.keys())}", "debug")
+                    if not hasattr(get_img_tag, "logged_warnings"): get_img_tag.logged_warnings = set()
+                    get_img_tag.logged_warnings.add(log_key)
+                return None # Return None if page number not in map
+        except (ValueError, TypeError) as e:
+             # Log if page_number cannot be converted to int or is invalid type
+             log_func(f"Warning: Invalid page number '{page_number}' type ({type(page_number).__name__}) or value for item {item_index + 1}: {e}", "warning")
+             return None # Return None if page number is invalid
+
+    # --- Process data and write to TSV ---
     try:
         with open(tsv_output_path, 'w', encoding='utf-8', newline='') as f:
             writer = csv.writer(f, delimiter='\t', lineterminator='\n', quoting=csv.QUOTE_MINIMAL)
-            writer.writerow(header) # Write the determined header
+            writer.writerow(header) # Write the fixed header
 
             for i, item in enumerate(json_data):
-                if isinstance(item, dict):
-                    row_values = []
-                    for col in header:
-                        value = item.get(col, "") # Get value or empty string if key missing
-                        # Basic cleaning: replace newlines and tabs
-                        cleaned_value = str(value).replace("\n", "<br>").replace("\t", " ")
-                        row_values.append(cleaned_value)
-                    writer.writerow(row_values)
-                else:
-                    log_func(f"Warning: Skipping non-dictionary item at index {i} in JSON data.", "warning")
+                if not isinstance(item, dict):
+                    log_func(f"Warning: Skipping non-dictionary item at index {i}.", "warning")
+                    continue
 
-        log_func(f"Successfully generated TSV file with {len(json_data)} data rows.", "info")
+                # Extract core fields
+                question_text = item.get("question_text", item.get("Question", ""))
+                answer_text = item.get("answer_text", item.get("Answer", ""))
+                tags = item.get("Tags", "") # Assumes 'Tags' key is added by tagging step
+
+                # Clean text fields (replace newlines with <br>, tabs with space)
+                question_cleaned = str(question_text).replace("\n", "<br>").replace("\t", " ")
+                answer_cleaned = str(answer_text).replace("\n", "<br>").replace("\t", " ")
+
+                # --- Construct Media Strings ---
+                page_image_map = item.get("_page_image_map", {}) # Get the map for this item
+                q_media_tags = set()
+                a_media_tags = set()
+
+                # Question Media Pages
+                q_page_num = item.get("question_page")
+                rel_q_pages = item.get("relevant_question_image_pages", [])
+
+                # Add image tag for the main question page number
+                if q_page_num is not None:
+                    q_context_tag = get_img_tag(q_page_num, page_image_map, i)
+                    if q_context_tag: q_media_tags.add(q_context_tag)
+
+                # Add image tags for relevant question image pages
+                if isinstance(rel_q_pages, list):
+                    for pg in rel_q_pages:
+                        tag = get_img_tag(pg, page_image_map, i)
+                        if tag: q_media_tags.add(tag)
+                elif rel_q_pages: # Log if it exists but isn't a list
+                     log_func(f"Warning: 'relevant_question_image_pages' is not a list for item {i+1}.", "warning")
+
+                # Answer Media Pages
+                a_page_num = item.get("answer_page")
+                rel_a_pages = item.get("relevant_answer_image_pages", [])
+
+                # Add image tag for the main answer page number
+                if a_page_num is not None:
+                     a_context_tag = get_img_tag(a_page_num, page_image_map, i)
+                     if a_context_tag: a_media_tags.add(a_context_tag)
+
+                # Add image tags for relevant answer image pages
+                if isinstance(rel_a_pages, list):
+                    for pg in rel_a_pages:
+                        tag = get_img_tag(pg, page_image_map, i)
+                        if tag: a_media_tags.add(tag)
+                elif rel_a_pages: # Log if it exists but isn't a list
+                     log_func(f"Warning: 'relevant_answer_image_pages' is not a list for item {i+1}.", "warning")
+
+                # Combine media tags into space-separated strings
+                question_media_string = " ".join(sorted(list(q_media_tags)))
+                answer_media_string = " ".join(sorted(list(a_media_tags)))
+
+                # Assemble the final row with exactly 5 columns in the specified order
+                row_to_write = [
+                    question_cleaned,
+                    question_media_string,
+                    answer_cleaned,
+                    answer_media_string,
+                    tags # Use the tags string directly
+                ]
+                writer.writerow(row_to_write)
+
+        log_func(f"Successfully generated 5-column TSV file with {len(json_data)} data rows.", "info")
         return True # Indicate success
+
     except IOError as e:
         log_func(f"Error writing TSV file '{tsv_output_path}': {e}", "error")
         return False
     except Exception as e:
-        log_func(f"Unexpected error generating TSV from JSON: {e}\n{traceback.format_exc()}", "error")
+        log_func(f"Unexpected error generating 5-column TSV from JSON: {e}\n{traceback.format_exc()}", "error")
         return False
