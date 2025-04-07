@@ -771,7 +771,8 @@ class WorkflowPage(ttk.Frame):
 
             self.after(0, self.log_status, "  Tagging Pass 1 Complete.", "info")
             self.after(0, self._update_progress_bar, progress_end_pass1)
-            final_tagged_data = tagged_data_pass1 # Start with pass 1 results
+            # Store Pass 1 results, don't assign to final_tagged_data yet
+            results_pass1 = tagged_data_pass1
 
             # --- Pass 2 Tagging (Optional) ---
             if enable_second_pass:
@@ -783,9 +784,9 @@ class WorkflowPage(ttk.Frame):
                     progress = progress_start_pass2 + ((processed / total) * (progress_end_pass2 - progress_start_pass2)) if total > 0 else progress_end_pass2
                     self.after(0, self._update_progress_bar, progress)
 
-                # Input for Pass 2 is the result of Pass 1 (already in memory)
+                # Input for Pass 2 should be the ORIGINAL data to avoid basing tags on Pass 1 tags
                 tagged_data_pass2_generator = tag_tsv_rows_gemini(
-                    input_data=tagged_data_pass1,                # Pass Pass 1 results
+                    input_data=json_data_pass1,                  # Use original data for Pass 2 input
                     api_key=api_key,
                     # Pass 2 specific parameters
                     model_name_pass1=tag_model_name_pass2,       # Use Pass 2 model here
@@ -797,23 +798,77 @@ class WorkflowPage(ttk.Frame):
                     progress_callback=update_tag_progress_pass2,
                     output_dir=output_dir, # Pass output dir for potential internal temp files
                     base_filename=f"{base_name}_tagging_p2", # Base name for internal temp files
-                    # Add enable_second_pass and second pass model/prompt if function uses them
+                    # Pass enable_second_pass flag and model/prompt info if needed by the function
                     enable_second_pass=True,
-                    second_pass_model_name=tag_model_name_pass2, # Pass explicitly if needed by function
-                    second_pass_prompt=tag_prompt_template_pass2, # Pass explicitly if needed by function
+                    second_pass_model_name=tag_model_name_pass2,
+                    second_pass_prompt=tag_prompt_template_pass2,
                     parent_widget=self
                 )
                 # Collect results (yields header first, then tagged dicts)
                 tagged_data_pass2_results = list(tagged_data_pass2_generator)
-                if not tagged_data_pass2_results or len(tagged_data_pass2_results) <= 1 and tagged_data_pass1: # Check if only header or nothing yielded
+                if not tagged_data_pass2_results or len(tagged_data_pass2_results) <= 1 and json_data_pass1: # Check if only header or nothing yielded
                     raise WorkflowStepError("Gemini tagging (Pass 2) failed (no data yielded).")
-                tagged_data_pass2 = tagged_data_pass2_results[1:] # Skip header
+                results_pass2 = tagged_data_pass2_results[1:] # Skip header
 
                 self.after(0, self.log_status, "  Tagging Pass 2 Complete.", "info")
                 self.after(0, self._update_progress_bar, progress_end_pass2)
-                final_tagged_data = tagged_data_pass2 # Update final data with pass 2 results
 
-            # --- ADDED: Save the final tagged data (after Pass 1 or Pass 2) ---
+                # --- Merge Tags ---
+                self.after(0, self.log_status, "  Merging tags from Pass 1 and Pass 2...", "debug")
+                merged_data = []
+                if len(results_pass1) != len(results_pass2):
+                    self.after(0, self.log_status, f"Warning: Mismatch in item count between Pass 1 ({len(results_pass1)}) and Pass 2 ({len(results_pass2)}). Merging based on Pass 1 length.", "warning")
+                    # Handle mismatch - prioritize Pass 1 structure, merge where possible
+                    for i, item_p1 in enumerate(results_pass1):
+                        merged_item = item_p1.copy() # Start with Pass 1 item
+                        tags1 = item_p1.get('Tags', '')
+                        tags2 = ""
+                        if i < len(results_pass2):
+                            tags2 = results_pass2[i].get('Tags', '')
+
+                        # Merge logic (handle potential errors from tagging)
+                        set1 = set(tag for tag in tags1.split() if not tag.startswith("ERROR:"))
+                        set2 = set(tag for tag in tags2.split() if not tag.startswith("ERROR:"))
+                        merged_set = set1.union(set2)
+                        merged_tags = " ".join(sorted(list(merged_set)))
+
+                        # Add back any error tags if they existed
+                        error_tags1 = " ".join(tag for tag in tags1.split() if tag.startswith("ERROR:"))
+                        error_tags2 = " ".join(tag for tag in tags2.split() if tag.startswith("ERROR:"))
+                        all_errors = f"{error_tags1} {error_tags2}".strip()
+
+                        final_tags = f"{merged_tags} {all_errors}".strip()
+                        merged_item['Tags'] = final_tags if final_tags else "" # Ensure empty string if no tags/errors
+                        merged_data.append(merged_item)
+
+                else: # Counts match, proceed with normal merge
+                    for item_p1, item_p2 in zip(results_pass1, results_pass2):
+                        merged_item = item_p1.copy() # Start with Pass 1 item
+                        tags1 = item_p1.get('Tags', '')
+                        tags2 = item_p2.get('Tags', '')
+
+                        # Merge logic (handle potential errors from tagging)
+                        set1 = set(tag for tag in tags1.split() if not tag.startswith("ERROR:"))
+                        set2 = set(tag for tag in tags2.split() if not tag.startswith("ERROR:"))
+                        merged_set = set1.union(set2)
+                        merged_tags = " ".join(sorted(list(merged_set)))
+
+                        # Add back any error tags if they existed
+                        error_tags1 = " ".join(tag for tag in tags1.split() if tag.startswith("ERROR:"))
+                        error_tags2 = " ".join(tag for tag in tags2.split() if tag.startswith("ERROR:"))
+                        all_errors = f"{error_tags1} {error_tags2}".strip()
+
+                        final_tags = f"{merged_tags} {all_errors}".strip()
+                        merged_item['Tags'] = final_tags if final_tags else "" # Ensure empty string if no tags/errors
+                        merged_data.append(merged_item)
+
+                final_tagged_data = merged_data # Assign merged results
+                self.after(0, self.log_status, f"  Tag merging complete ({len(final_tagged_data)} items).", "debug")
+
+            else: # Pass 2 not enabled
+                final_tagged_data = results_pass1 # Use Pass 1 results directly
+
+            # --- Save the final tagged data (after Pass 1 or merged Pass 1+2) ---
             if final_tagged_data is not None:
                 try:
                     self.after(0, self.log_status, f"Saving final tagged intermediate JSON: {os.path.basename(final_tagged_json_output_path)}", "debug")
@@ -1065,6 +1120,23 @@ class WorkflowPage(ttk.Frame):
         final_tsv_path = os.path.join(output_dir, f"bulk_visual_{timestamp_str}_final_tagged.txt")
 
         try:
+            # --- Create Timestamped Subfolder in INPUT directory ---
+            bulk_image_subfolder_name = f"Bulk_Visual_{timestamp_str}"
+            # Use output_dir (derived from input file path) as the base, NOT anki_media_dir
+            target_image_subfolder_path = os.path.join(output_dir, bulk_image_subfolder_name)
+            # --- Added Logging ---
+            self.after(0, self.log_status, f"DEBUG: Attempting to create image subfolder in input dir at: {target_image_subfolder_path}", "debug")
+            # --- End Added Logging ---
+            try:
+                os.makedirs(target_image_subfolder_path, exist_ok=True)
+                self.after(0, self.log_status, f"Created/verified image subfolder: {target_image_subfolder_path}", "info")
+            except OSError as e:
+                # Raise error immediately if subfolder creation fails
+                self.after(0, self.log_status, f"FATAL: Failed to create image subfolder '{target_image_subfolder_path}': {e}", "error")
+                self.after(0, show_error_dialog, "Bulk Workflow Error", f"Could not create image subfolder:\n{target_image_subfolder_path}\n\nError: {e}", self)
+                self.after(0, self._workflow_finished, False, None, f"Failed to create image subfolder: {e}")
+                return # Stop the thread
+
             # STEP 1: Process Each PDF -> JSON
             self.after(0, self.log_status, f"Starting Step 1: Processing {total_files} PDF files...", "step")
             for pdf_path in input_pdf_paths:
@@ -1083,10 +1155,14 @@ class WorkflowPage(ttk.Frame):
                     continue
 
                 try:
-                    # STEP 1a: Generate Images (Directly to Anki Media)
-                    self.after(0, self.log_status, f"  Step 1a: Generating images for {file_basename}...", "debug")
+                    # STEP 1a: Generate Images (Directly to Anki Media Subfolder)
+                    self.after(0, self.log_status, f"  Step 1a: Generating images for {file_basename} into {bulk_image_subfolder_name}...", "debug")
+                    # --- Added Logging ---
+                    self.after(0, self.log_status, f"DEBUG: Calling generate_page_images with destination: {target_image_subfolder_path}", "debug")
+                    # --- End Added Logging ---
+                    # Pass the timestamped subfolder path (in input dir) and set save_direct_flag to False
                     final_image_folder, page_image_map = generate_page_images(
-                        pdf_path, anki_media_dir, sanitized_pdf_name, save_direct_flag=True,
+                        pdf_path, target_image_subfolder_path, sanitized_pdf_name, save_direct_flag=False, # Save to specified subfolder, not directly to Anki media root
                         log_func=self.log_status, parent_widget=self, filename_prefix=sanitized_pdf_name
                     )
                     if final_image_folder is None: raise WorkflowStepError("Image generation failed.")
@@ -1187,7 +1263,8 @@ class WorkflowPage(ttk.Frame):
                 f"Failed (Renamed 'UP_'): {failed_files}\n"
                 f"Skipped (Non-PDF): {skipped_files}\n\n"
                 f"Final Tagged File:\n{final_tsv_path}\n\n"
-                f"Images Saved Directly To:\n{anki_media_dir}"
+                f"Images Saved To Subfolder (in Input Dir):\n{target_image_subfolder_path}\n\n" # Clarify location
+                f"IMPORTANT:\nManually copy the folder\n'{bulk_image_subfolder_name}'\ninto Anki's 'collection.media' folder\nbefore importing the TSV file!"
             )
             self.after(0, show_info_dialog, "Bulk Workflow Complete", summary, self)
             success = True

@@ -30,26 +30,41 @@ def generate_page_images(pdf_path, image_destination_path, sanitized_base_name,
     log_func(f"Generating page images for '{os.path.basename(pdf_path)}'...", "info")
     page_image_map = {}
     doc = None
-    final_image_folder_path = image_destination_path
+    final_image_folder_path = image_destination_path # Start assuming we use the provided path
 
     if not PYMUPDF_INSTALLED:
         raise ProcessingError("PyMuPDF (fitz) is required for image generation.")
 
-    if not save_direct_flag:
-        # Create a subfolder within the destination path if not saving directly
-        # Note: image_destination_path is the TSV output dir in this case
-        subfolder_name = f"{sanitized_base_name}_images_{datetime.now():%Y%m%d_%H%M%S}"
-        final_image_folder_path = os.path.join(image_destination_path, subfolder_name)
+    # If save_direct_flag is True, final_image_folder_path MUST be an existing directory (Anki media)
+    if save_direct_flag:
+        if not os.path.isdir(final_image_folder_path):
+            log_func(f"Error: Target Anki media path for direct save does not exist or is not a directory: {final_image_folder_path}", "error")
+            return None, {}
+        else:
+            log_func(f"Saving images directly into existing directory: {final_image_folder_path}", "info")
+    # If save_direct_flag is False, final_image_folder_path is the target folder (e.g., Bulk_Visual_...)
+    # We need to ensure THIS folder exists, but we DON'T create an extra subfolder inside it.
+    else:
         if not os.path.exists(final_image_folder_path):
             try:
                 os.makedirs(final_image_folder_path)
-                log_func(f"Created image subfolder: {subfolder_name}", "info")
+                log_func(f"Created image destination folder: {os.path.basename(final_image_folder_path)}", "info")
             except OSError as e:
-                log_func(f"Error creating image subfolder '{final_image_folder_path}': {e}", "error")
+                log_func(f"Error creating image destination folder '{final_image_folder_path}': {e}", "error")
                 return None, {}
-    elif not os.path.isdir(final_image_folder_path):
-         # If saving directly, the path must already exist (Anki media folder)
-         log_func(f"Error: Target Anki media path does not exist or is not a directory: {final_image_folder_path}", "error")
+        elif not os.path.isdir(final_image_folder_path):
+             log_func(f"Error: Image destination path exists but is not a directory: {final_image_folder_path}", "error")
+             return None, {}
+        else:
+             log_func(f"Saving images into existing destination folder: {final_image_folder_path}", "info")
+
+    # The rest of the function now uses final_image_folder_path correctly,
+    # which is either the Anki media dir (if save_direct_flag=True)
+    # or the specific target folder like Bulk_Visual_... (if save_direct_flag=False)
+
+    # Check if the final resolved path is actually a directory before proceeding
+    if not os.path.isdir(final_image_folder_path):
+         log_func(f"Error: Final image path is not a valid directory: {final_image_folder_path}", "error")
          return None, {}
     else:
         log_func(f"Saving images directly into: {final_image_folder_path}", "info")

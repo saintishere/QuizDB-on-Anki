@@ -500,8 +500,6 @@ class TagTsvPage(ttk.Frame):
             # This line MUST remain outside the commented section and 'if success' block
             self.after(0, self._processing_finished, success)
 
-            self.after(0, self._processing_finished, success)
-
 
     def _update_progress_bar(self, progress_value):
         """Callback to update the progress bar from the thread."""

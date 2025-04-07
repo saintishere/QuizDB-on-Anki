@@ -626,8 +626,8 @@ def tag_tsv_rows_gemini(
                     current_pass_progress = (processed_items_count / total_items) * 100 if total_items > 0 else 0
                     # Scale the current pass progress into the overall range
                     total_progress = base_progress + (current_pass_progress * (pass_range / 100))
-                    # Call the callback function provided by the UI
-                    progress_callback(processed_items_count, total_items) # Pass both counts
+                    # Call the callback function provided by the UI, passing the processed count and total
+                    progress_callback(processed_items_count, total_items) # Pass processed count and total
 
             # --- Intermediate Save ---
             if current_intermediate_save_path:
