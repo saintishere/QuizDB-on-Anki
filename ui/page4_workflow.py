@@ -200,8 +200,8 @@ class WorkflowPage(ttk.Frame):
                 self.p4_wf_processing_type.set("Visual Q&A (PDF)")
                 if hasattr(self, 'p4_wf_visual_qa_radio'): self.p4_wf_visual_qa_radio.config(state="disabled")
                 if hasattr(self, 'p4_wf_text_analysis_radio'): self.p4_wf_text_analysis_radio.config(state="disabled")
-                self.p4_wf_save_directly_to_media.set(True)
-                if hasattr(self, 'p4_wf_save_direct_check'): self.p4_wf_save_direct_check.config(state="disabled")
+                # self.p4_wf_save_directly_to_media.set(True) # <-- REMOVED
+                # if hasattr(self, 'p4_wf_save_direct_check'): self.p4_wf_save_direct_check.config(state="disabled") # <-- REMOVED
                 if hasattr(self, 'p4_wf_run_button'): self.p4_wf_run_button.config(text="Run Bulk Visual Workflow")
             else:
                 # Show single file input widgets

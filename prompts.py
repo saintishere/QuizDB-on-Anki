@@ -1134,8 +1134,8 @@ This tag applies when the question focuses on the commercial aspects of transpor
 **#Subject::History**
 This tag applies broadly to questions about past events, periods, figures, and the study of the past, especially when covering large scopes or general historical concepts not confined to a specific sub-category like military history or archaeology.
 
-**#Subject::History::Archaeology**
-This tag applies when the question concerns the study of human history and prehistory through the excavation of sites and the analysis of artifacts and other physical remains. Includes archaeological methods, famous sites (Pompeii, Machu Picchu), discoveries, or key figures in archaeology. Example: "Which British archaeologist discovered the tomb of Tutankhamun in 1922?".
+**#Subject::History::Archaeology-Sites-Findings-And-More**
+This tag applies when the question concerns the study of human history and prehistory through the excavation of sites and the analysis of artifacts and other physical remains. Includes archaeological methods, archaeological sites (Pompeii, Machu Picchu or even less popular sites), discoveries, findings or key figures in archaeology. Example: "Which British archaeologist discovered the tomb of Tutankhamun in 1922?".
 
 **#Subject::History::Military-History-And-Military-Structure-And-Functioning**
 This tag applies when the question focuses on the history of warfare, armed forces, military strategies and tactics, specific battles (viewed historically), military technology, ranks, famous commanders, or the organization and structure of armies/navies/air forces. Example: "What was the name of the military strategy used by Germany in the early phases of World War II, characterized by fast, overwhelming attacks?".
