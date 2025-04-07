@@ -4,6 +4,7 @@ from tkinter import ttk, filedialog, scrolledtext
 import os
 import threading
 import traceback # Added for logging
+import json # Added to fix undefined variable error
 from datetime import datetime
 
 # --- Use relative imports ONLY ---
@@ -585,43 +586,43 @@ class ProcessFilePage(ttk.Frame):
                 self.after(0, self.log_status, "Gemini extraction yielded no Q&A pairs.", "warning")
             self.after(0, self.log_status, "Step 1b Complete.", "info")
 
-            # === Step 1c: Generate TSV ===
-            self.after(0, self.log_status, "Step 1c (Visual): Generating TSV from extracted data...", "step")
-            # Call the specific visual TSV generator, writing directly to file
-            tsv_file_path = generate_tsv_visual(
-                parsed_data,
-                self.p2_page_image_map,
-                self.log_status,
-                return_rows=False, # Write file directly
-                tsv_output_dir=tsv_output_dir,
-                sanitized_base_name=safe_base_name
-            )
-            if tsv_file_path is None:
-                raise ProcessingError("Failed during TSV file generation.")
+            # === Step 1c: Save Intermediate JSON ===
+            self.after(0, self.log_status, "Step 1c (Visual): Saving intermediate JSON data...", "step")
+            intermediate_json_path = os.path.join(tsv_output_dir, f"{safe_base_name}_intermediate_visual.json")
+            try:
+                # Add metadata needed for potential TSV generation later (in Page 3 or 4)
+                # This might be redundant if Page 3 doesn't use it, but good for consistency
+                for item in parsed_data:
+                    if isinstance(item, dict):
+                        item['_page_image_map'] = self.p2_page_image_map # Map page numbers to image filenames
+                        item['_source_pdf_prefix'] = safe_base_name # Store the base name for reference
+                # Save the data
+                with open(intermediate_json_path, 'w', encoding='utf-8') as f:
+                    json.dump(parsed_data, f, indent=2)
+                self.after(0, self.log_status, f"Saved intermediate JSON: {os.path.basename(intermediate_json_path)}", "info")
+            except Exception as json_e:
+                raise ProcessingError(f"Failed to save intermediate JSON: {json_e}")
             self.after(0, self.log_status, "Step 1c Complete.", "info")
 
             # === Success ===
             success = True
-            self.after(0, self.log_status, "Visual Q&A workflow completed successfully!", "info")
+            self.after(0, self.log_status, "Visual Q&A extraction completed successfully!", "info")
 
             # Prepare success message
-            success_message = f"Visual Q&A Processing Complete!\n\nTSV File:\n{tsv_file_path}\n\n"
+            success_message = f"Visual Q&A Extraction Complete!\n\nIntermediate JSON File:\n{intermediate_json_path}\n\n"
             if save_direct_flag:
                 success_message += f"Images Saved Directly To:\n{self.p2_image_output_folder_final}"
             else:
                 success_message += f"Images Saved To Subfolder:\n{self.p2_image_output_folder_final}\n\n"
-                success_message += f"IMPORTANT: Manually copy images from\n'{os.path.basename(self.p2_image_output_folder_final)}' into Anki's 'collection.media' folder before importing the TSV."
+                success_message += f"IMPORTANT: Manually copy images from\n'{os.path.basename(self.p2_image_output_folder_final)}' into Anki's 'collection.media' folder if needed."
 
             # Show success dialog and ask to switch page
-            self.after(0, show_info_dialog, "Success", success_message, self)
-            if tsv_file_path:
-                 if ask_yes_no("Proceed?", f"Created visual TSV.\nSwitch to 'Tag TSV File' page and load the generated JSON?", parent=self):
-                     # Find the corresponding JSON file (saved by call_gemini_visual_extraction)
-                     json_temp_path = os.path.join(tsv_output_dir, f"{safe_base_name}_visual_extract_temp_results.json")
-                     if os.path.exists(json_temp_path):
-                         self.after(0, self.app.switch_to_page, 2, json_temp_path) # Switch to Page 3 (index 2) with JSON path
-                     else:
-                         self.after(0, self.log_status, f"Could not find intermediate JSON file '{os.path.basename(json_temp_path)}' to load in Page 3.", "warning")
+            self.after(0, show_info_dialog, "Extraction Success", success_message, self)
+            if intermediate_json_path and os.path.exists(intermediate_json_path):
+                 if ask_yes_no("Proceed to Tagging?", f"Created intermediate JSON.\nSwitch to 'Tag TSV File' page and load this JSON file for tagging?", parent=self):
+                     self.after(0, self.app.switch_to_page, 2, intermediate_json_path) # Switch to Page 3 (index 2) with JSON path
+            elif not parsed_data: # Handle case where no data was extracted
+                 self.after(0, self.log_status, "No Q&A data extracted, skipping tagging prompt.", "info")
 
         except (ProcessingError, WorkflowStepError) as pe:
             # Log and show specific workflow errors
@@ -648,8 +649,9 @@ class ProcessFilePage(ttk.Frame):
                                   safe_base_name, chunk_size, api_delay):
         """Background thread for TEXT ANALYSIS workflow."""
         success = False
-        tsv_file_path = None
+        # tsv_file_path = None # No longer generating TSV here
         parsed_data = None
+        intermediate_json_path = None # Will be set by call_gemini_text_analysis
         try:
             self.after(0, self.log_status, f"Starting Text Analysis for: {os.path.basename(input_file_path)}", "info")
 
@@ -691,37 +693,34 @@ class ProcessFilePage(ttk.Frame):
             if not parsed_data: # Log if list is empty
                 self.after(0, self.log_status, "Gemini analysis yielded no Q&A pairs.", "warning")
             self.after(0, self.log_status, "Step 1b Complete (Gemini chunk processing).", "info")
+            # The intermediate JSON (_text_analysis_final.json) is saved internally by call_gemini_text_analysis
 
-            # === Step 1c: Generate TSV ===
-            self.after(0, self.log_status, "Step 1c (Text): Generating TSV from combined results...", "step")
-            # Call the specific text analysis TSV generator, writing directly to file
-            tsv_file_path = generate_tsv_text_analysis(
-                parsed_data,
-                tsv_output_dir,
-                safe_base_name, # Use base name for the TSV file
-                self.log_status
-            )
-            if tsv_file_path is None:
-                raise ProcessingError("Failed during TSV file generation.")
-            self.after(0, self.log_status, "Step 1c Complete.", "info")
+            # === Step 1c: (Removed TSV Generation) ===
+            # TSV generation is now deferred to Page 3 after tagging.
 
             # === Success ===
             success = True
-            self.after(0, self.log_status, "Text Analysis workflow completed successfully!", "info")
+            self.after(0, self.log_status, "Text Analysis extraction completed successfully!", "info")
+
+            # Find the path to the intermediate JSON saved by the API call
+            intermediate_json_path = os.path.join(tsv_output_dir, f"{safe_base_name}_text_analysis_final.json")
 
             # Prepare and show success message
-            success_message = f"Text Analysis Processing Complete!\n\nTSV File Saved To:\n{tsv_file_path}"
-            self.after(0, show_info_dialog, "Success", success_message, self)
+            if os.path.exists(intermediate_json_path):
+                success_message = f"Text Analysis Extraction Complete!\n\nIntermediate JSON File Saved To:\n{intermediate_json_path}"
+                self.after(0, show_info_dialog, "Extraction Success", success_message, self)
+            else:
+                # Should not happen if call_gemini_text_analysis succeeded, but handle defensively
+                self.after(0, self.log_status, f"Intermediate JSON file not found at expected path: {intermediate_json_path}", "warning")
+                self.after(0, show_info_dialog, "Extraction Success", "Text analysis extraction complete, but intermediate JSON file was not found.", self)
+
 
             # Ask to switch page
-            if tsv_file_path:
-                if ask_yes_no("Proceed?", f"Created text analysis TSV.\nSwitch to 'Tag TSV File' page and load the generated JSON?", parent=self):
-                     # Find the corresponding JSON file (saved by call_gemini_text_analysis)
-                     json_final_path = os.path.join(tsv_output_dir, f"{safe_base_name}_text_analysis_final.json")
-                     if os.path.exists(json_final_path):
-                         self.after(0, self.app.switch_to_page, 2, json_final_path) # Switch to Page 3 (index 2) with JSON path
-                     else:
-                         self.after(0, self.log_status, f"Could not find final JSON file '{os.path.basename(json_final_path)}' to load in Page 3.", "warning")
+            if intermediate_json_path and os.path.exists(intermediate_json_path):
+                if ask_yes_no("Proceed to Tagging?", f"Created intermediate JSON.\nSwitch to 'Tag TSV File' page and load this JSON file for tagging?", parent=self):
+                     self.after(0, self.app.switch_to_page, 2, intermediate_json_path) # Switch to Page 3 (index 2) with JSON path
+            elif not parsed_data: # Handle case where no data was extracted
+                 self.after(0, self.log_status, "No Q&A data extracted, skipping tagging prompt.", "info")
 
 
         except (ProcessingError, WorkflowStepError) as pe:

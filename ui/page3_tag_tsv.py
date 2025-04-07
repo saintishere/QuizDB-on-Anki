@@ -436,7 +436,10 @@ class TagTsvPage(ttk.Frame):
                     output_dir=os.path.dirname(intermediate_json_p2_path),
                     base_filename=os.path.splitext(os.path.basename(intermediate_json_p2_path))[0],
                     parent_widget=self,
-                    enable_second_pass=True # Indicate this is the second pass call internally if needed
+                    # Explicitly pass second pass parameters for consistency with Page 4 pattern
+                    enable_second_pass=True,
+                    second_pass_model_name=model_name_pass2,
+                    second_pass_prompt=system_prompt_pass2
                 )
 
                 # Collect results from generator
