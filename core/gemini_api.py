@@ -770,12 +770,6 @@ def tag_tsv_rows_gemini(
                 # --- Update Progress ---
                 # *** ADDED PROGRESS CALLBACK CALL HERE ***
                 if progress_callback:
-                    # Calculate overall progress based on current pass and items within the pass
-                    base_progress = 0 if current_pass == 1 else 50 # Pass 1 is 0-50%, Pass 2 is 50-100% (approx)
-                    pass_range = 50 # Each pass covers roughly 50% of the progress bar
-                    current_pass_progress = (processed_items_count / total_items) * 100 if total_items > 0 else 0
-                    # Scale the current pass progress into the overall range
-                    total_progress = base_progress + (current_pass_progress * (pass_range / 100))
                     # Call the callback function provided by the UI, passing the processed count and total
                     progress_callback(processed_items_count, total_items) # Pass processed count and total
 

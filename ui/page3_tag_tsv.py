@@ -389,8 +389,9 @@ class TagTsvPage(ttk.Frame):
                 input_qa_data, # Pass the list of dicts directly
                 api_key, model_name_pass1, system_prompt_pass1,
                 batch_size, api_delay, self.log_status,
-                # Update progress for pass 1 (0% to 50% or 0% to 90% if only 1 pass)
-                progress_callback=lambda p: self.after(0, self._update_progress_bar, p / (2 if enable_second_pass else 1.1)), # Scale progress
+                # Update progress calculation with two arguments
+                progress_callback=lambda processed, total: self.after(0, self._update_progress_bar, 
+                    (processed / total * 100) / (2 if enable_second_pass else 1.1) if total > 0 else 0),
                 output_dir=os.path.dirname(intermediate_json_p1_path), # For potential internal temp files
                 base_filename=os.path.splitext(os.path.basename(intermediate_json_p1_path))[0],
                 parent_widget=self,
@@ -431,8 +432,9 @@ class TagTsvPage(ttk.Frame):
                     tagged_data_p1_actual, # Input is Pass 1 data (list of dicts)
                     api_key, model_name_pass2, system_prompt_pass2,
                     batch_size, api_delay, self.log_status,
-                    # Update progress for pass 2 (50% to 90%)
-                    progress_callback=lambda p: self.after(0, self._update_progress_bar, 50 + (p * 0.4)), # Scale 0-100 to 50-90
+                    # Update progress calculation with two arguments
+                    progress_callback=lambda processed, total: self.after(0, self._update_progress_bar, 
+                        50 + ((processed / total * 100) * 0.4) if total > 0 else 50),
                     output_dir=os.path.dirname(intermediate_json_p2_path),
                     base_filename=os.path.splitext(os.path.basename(intermediate_json_p2_path))[0],
                     parent_widget=self,
