@@ -8,7 +8,7 @@ import traceback
 import os
 from tkinter import messagebox
 import math
-from typing import Optional, List  # Removed List, kept Optional
+from typing import Optional, List # Keep List for schema definition
 from pydantic import BaseModel, Field, ValidationError # Added Pydantic
 
 # Use relative imports ONLY
@@ -133,9 +133,11 @@ def parse_batch_tag_response(response_text, batch_size, allowed_tags_set_for_pas
                 if 0 <= item_num < batch_size:
                     last_valid_item_num = item_num
                     if raw_tags_string:
-                        suggested_tags = raw_tags_string.split()
+                        # Split robustly, handling multiple spaces
+                        suggested_tags = [tag for tag in raw_tags_string.split(' ') if tag]
+                        # Filter against the allowed set for the current pass
                         filtered_tags = [tag for tag in suggested_tags if tag in allowed_tags_set_for_pass]
-                        final_tags_string = " ".join(filtered_tags)
+                        final_tags_string = " ".join(sorted(filtered_tags)) # Sort for consistency
                         tags_list[item_num] = final_tags_string if final_tags_string else "INFO: No Valid Tags Found"
                     else:
                         tags_list[item_num] = "" # Empty response for item
@@ -193,6 +195,7 @@ def save_json_incrementally(data_list, output_dir, base_filename, step_name, log
 
 
 # --- Visual Extraction (Refactored for Structured Output) ---
+# ... (call_gemini_visual_extraction function remains unchanged) ...
 def call_gemini_visual_extraction(
     pdf_path, api_key, model_name, prompt_text, log_func, parent_widget=None
 ):
@@ -252,12 +255,12 @@ def call_gemini_visual_extraction(
         upload_duration = time.time() - upload_start_time
         log_func(f"PDF uploaded ({upload_duration:.1f}s). URI: {uploaded_file_uri}", "info")
 
-        # Initialize model WITHOUT generation config
+        # Initialize model WITHOUT generation config initially
         model = genai.GenerativeModel(model_name, safety_settings=GEMINI_SAFETY_SETTINGS)
 
         log_func(f"Sending JSON extraction request to Gemini ({model_name}) with dictionary schema...", "info")
         api_start_time = time.time()
-        
+
         # Pass the generation_config_dict directly to generate_content
         response = model.generate_content(
             [prompt_text, uploaded_file],
@@ -273,8 +276,17 @@ def call_gemini_visual_extraction(
                 log_func("Attempting to use response.parsed...", "debug")
                 parsed_list = response.parsed
                 if isinstance(parsed_list, list):
-                    # Convert Pydantic models back to dictionaries
-                    all_parsed_objects = [item.model_dump() for item in parsed_list if isinstance(item, VisualExtractionItem)]
+                    # Convert Pydantic models back to dictionaries if necessary
+                    # Note: The SDK might return dicts directly with dictionary schema
+                    all_parsed_objects = []
+                    for item in parsed_list:
+                        if isinstance(item, BaseModel):
+                             all_parsed_objects.append(item.model_dump())
+                        elif isinstance(item, dict):
+                             all_parsed_objects.append(item)
+                        else:
+                            log_func(f"Warning: Unexpected item type in response.parsed list: {type(item)}", "warning")
+
                     log_func(f"Successfully used response.parsed ({len(all_parsed_objects)} items).", "info")
                     temp_save_path = save_json_incrementally(all_parsed_objects, output_dir, safe_base_name, "visual_extract", log_func)
                 else:
@@ -286,6 +298,7 @@ def call_gemini_visual_extraction(
                 json_string = response.text
                 log_func(f"Falling back to parsing response.text (len {len(json_string) if json_string else 0})...", "debug")
                 if json_string:
+                    parsed_data = None # Initialize parsed_data for this block
                     try:
                         parsed_data = json.loads(json_string)
                     except json.JSONDecodeError as e:
@@ -298,36 +311,35 @@ def call_gemini_visual_extraction(
                                 log_func("Parsing successful after stripping markdown.", "info")
                             except json.JSONDecodeError as e2:
                                 log_func(f"Parsing failed even after stripping: {e2}", "error")
-                                parsed_data = None
+                                parsed_data = None # Ensure it's None on failure
 
                     # Validate the structure if parsing succeeded
                     if parsed_data is not None:
                         if isinstance(parsed_data, list):
+                            # Validate items against the expected dictionary structure (simplified check)
                             validated_items = []
+                            required_keys = visual_extraction_schema_dict["items"]["required"]
                             for i, item_data in enumerate(parsed_data):
-                                try:
-                                    validated_model = VisualExtractionItem(**item_data)
-                                    validated_items.append(validated_model.model_dump())
-                                except ValidationError as val_err:
-                                    log_func(f"Validation Error for item {i}: {val_err}. Skipping item.", "warning")
-                                except Exception as item_err:
-                                     log_func(f"Error processing item {i}: {item_err}. Skipping item.", "warning")
+                                if isinstance(item_data, dict) and all(key in item_data for key in required_keys):
+                                    validated_items.append(item_data) # Append the dictionary directly
+                                else:
+                                    log_func(f"Validation Error for item {i}: Missing keys or not a dict. Skipping item.", "warning")
 
                             if validated_items:
                                 all_parsed_objects = validated_items
                                 log_func(f"Validated JSON from response.text ({len(all_parsed_objects)} items).", "info")
                                 temp_save_path = save_json_incrementally(all_parsed_objects, output_dir, safe_base_name, "visual_extract", log_func)
                             else:
-                                log_func("No valid items found after validating parsed JSON.", "warning")
+                                log_func("No valid items found after validating parsed JSON from text.", "warning")
                                 all_parsed_objects = []
                         else:
                             log_func("Parsing Error: Parsed JSON from text is not a list.", "error")
                             all_parsed_objects = None
-                    else:
-                         all_parsed_objects = None
+                    # else: # Parsing failed
+                    #    all_parsed_objects = None # Already None or set to None above
                 else:
                     log_func("Warning: Received empty response text from Gemini.", "warning")
-                    all_parsed_objects = []
+                    all_parsed_objects = [] # Treat empty text as empty list
 
             # Handle case where neither .parsed nor .text worked
             elif all_parsed_objects is None:
@@ -382,7 +394,8 @@ def call_gemini_visual_extraction(
             return None, uploaded_file_uri
 
         log_func("Gemini Visual JSON extraction step complete.", "info")
-        return all_parsed_objects, uploaded_file_uri
+        # Ensure returning list of dicts
+        return all_parsed_objects if isinstance(all_parsed_objects, list) else None, uploaded_file_uri
 
     except google.api_core.exceptions.GoogleAPIError as api_e:
         error_type = type(api_e).__name__; error_message = f"API Error (Visual): {error_type}: {api_e}"
@@ -399,7 +412,10 @@ def call_gemini_visual_extraction(
         log_func(f"FATAL API ERROR (Visual): {error_message}\n{traceback.format_exc()}", "error")
         if parent_widget: messagebox.showerror("Unexpected Error", error_message, parent=parent_widget)
         return None, uploaded_file_uri
+
+
 # --- Text Analysis (Refactored for Structured Output) ---
+# ... (call_gemini_text_analysis function remains unchanged) ...
 def call_gemini_text_analysis(
     text_content, api_key, model_name, prompt, log_func,
     output_dir, base_filename, chunk_size=30000, api_delay=5.0, parent_widget=None
@@ -423,10 +439,12 @@ def call_gemini_text_analysis(
     finish_reason_enum = getattr(genai.types, "FinishReason", None)
     finish_reason_safety = getattr(finish_reason_enum, "SAFETY", 3) if finish_reason_enum else 3
     finish_reason_stop = getattr(finish_reason_enum, "STOP", 1) if finish_reason_enum else 1
-    # --- Use Pydantic schema in generation_config ---
+
+    # --- Define Pydantic schema for generation_config ---
+    # Note: The SDK expects the schema itself, not a dictionary representation here
     generation_config = genai.GenerationConfig(
         response_mime_type="application/json",
-        response_schema=List[BookProcessingItem] # Use the Pydantic model
+        response_schema=List[BookProcessingItem] # Use the Pydantic model directly
     )
 
     try:
@@ -492,6 +510,7 @@ def call_gemini_text_analysis(
                         raw_response_text = response.text.strip()
                         log_func(f"Falling back to parsing response.text for chunk {chunk_num} (len {len(raw_response_text)})...", "debug")
                         if raw_response_text:
+                            parsed_data = None # Initialize for this block
                             try:
                                 parsed_data = json.loads(raw_response_text)
                             except json.JSONDecodeError:
@@ -504,9 +523,8 @@ def call_gemini_text_analysis(
                                         log_func("Parsing successful after stripping markdown.", "info")
                                     except json.JSONDecodeError as e2:
                                         log_func(f"Parsing Error: Failed JSON decode chunk {chunk_num} even after stripping: {e2}", "error")
-                                        parsed_data = None
-                                else:
-                                    parsed_data = None # Stripping didn't help
+                                        # parsed_data remains None
+                                # else: parsed_data remains None
 
                             # Validate structure if parsing succeeded
                             if parsed_data is not None:
@@ -514,6 +532,7 @@ def call_gemini_text_analysis(
                                     validated_items = []
                                     for i_item, item_data in enumerate(parsed_data):
                                         try:
+                                            # Validate against Pydantic model and convert back to dict
                                             validated_model = BookProcessingItem(**item_data)
                                             validated_items.append(validated_model.model_dump())
                                         except ValidationError as val_err:
@@ -525,7 +544,7 @@ def call_gemini_text_analysis(
                                 else:
                                     log_func(f"Parsing Error: Chunk {chunk_num} JSON from text not list.", "error")
                                     chunk_items_list = None # Indicate failure
-                            else:
+                            else: # Parsing failed
                                  log_func(f"Parsing Error: Failed JSON decode chunk {chunk_num}.", "error")
                                  chunk_items_list = None # Indicate failure
                         else: # Empty raw_response_text
@@ -541,9 +560,10 @@ def call_gemini_text_analysis(
                         else:
                              log_func(f"No valid Q&A items found/parsed for chunk {chunk_num}.", "warning")
                              chunk_parsed_successfully = True # Consider empty valid response a success for the chunk
-                    else:
+                    else: # Failed to parse from either .parsed or .text
                      log_func(f"Error: Could not parse valid JSON for chunk {chunk_num} from response.", "error")
                      # chunk_parsed_successfully remains False
+
                 # --- Add except block for the parsing try ---
                 except Exception as parse_e:
                     log_func(f"Unexpected error during response parsing/validation for chunk {chunk_num}: {parse_e}", "error")
@@ -594,15 +614,16 @@ def call_gemini_text_analysis(
     if final_save_path: log_func(f"Final combined results saved to {os.path.basename(final_save_path)}", "info")
     elif all_parsed_data: log_func("Error saving final combined results.", "error")
     if not all_parsed_data: log_func("Warning: No data extracted.", "warning"); return []
-    return all_parsed_data
+    # Ensure returning list of dicts
+    return all_parsed_data if isinstance(all_parsed_data, list) else None
 
 
 # --- REFACTORED Tagging Function (Handles JSON input) ---
 def tag_tsv_rows_gemini(
     input_data, # Now expects list of dictionaries (JSON objects)
     api_key,
-    model_name_pass1,
-    system_prompt_pass1,
+    model_name_pass1, # Renamed for clarity, used for the current pass
+    system_prompt_pass1, # Renamed for clarity, used for the current pass
     batch_size,
     api_delay,
     log_func,
@@ -610,12 +631,13 @@ def tag_tsv_rows_gemini(
     output_dir=None, # For saving intermediate JSON if needed
     base_filename=None, # For naming intermediate JSON
     parent_widget=None,
-    enable_second_pass=False,
-    second_pass_model_name=None,
-    second_pass_prompt=None,
+    enable_second_pass=False, # Flag indicating if this call is for Pass 2 (triggers merge)
+    second_pass_model_name=None, # Keep for consistency, though not used directly here
+    second_pass_prompt=None, # Keep for consistency, though not used directly here
 ):
     """
-    Tags JSON data items using Gemini batches (1 or 2 passes).
+    Tags JSON data items using Gemini batches. If enable_second_pass is True,
+    it merges the new tags with existing 'Tags' found in the input_data items.
     Input: List of dictionaries.
     Yields: Header list, then original dictionaries updated with a 'Tags' key.
     Handles intermediate saving of tagged JSON.
@@ -627,181 +649,180 @@ def tag_tsv_rows_gemini(
 
     # --- Determine Header ---
     priority_cols = ["Question", "question_text", "Answer", "answer_text", "Tags", "QuestionMedia", "AnswerMedia"]
-    # Use keys from the first *actual* data item
     first_item_keys = list(input_data[0].keys()) if input_data else []
     output_header = [col for col in priority_cols if col in first_item_keys]
-    remaining_keys = sorted([key for key in first_item_keys if not key.startswith('_') and key not in priority_cols])
+    remaining_keys = sorted([key for key in first_item_keys if not key.startswith('_') and key not in output_header])
     output_header.extend(remaining_keys)
-    if "Tags" not in output_header:
-        output_header.append("Tags")
+    if "Tags" not in output_header: output_header.append("Tags")
     yield output_header # Yield the determined header first
 
     total_items = len(input_data)
-    if total_items == 0: # Double check after header determination
-        log_func("No data items to tag.", "warning")
-        return
+    if total_items == 0: log_func("No data items to tag.", "warning"); return
 
     processed_items_count = 0
     total_batches = math.ceil(total_items / batch_size)
-    log_func(f"Starting Gemini tagging: {total_items} items, {total_batches} batches. Pass 2: {'Enabled' if enable_second_pass else 'Disabled'}", "info")
+    current_pass_num = 2 if enable_second_pass else 1 # Determine pass number for logging/logic
+    log_func(f"Starting Gemini tagging (Pass {current_pass_num}): {total_items} items, {total_batches} batches.", "info")
 
     # --- Configure API Key ---
     if not configure_gemini(api_key):
         error_msg = "Failed to configure Gemini API key"; log_func(f"API Error: {error_msg}", "error")
         if parent_widget: messagebox.showerror("API Error", error_msg, parent=parent_widget)
-        # Yield original items with error tag
         for item in input_data: item['Tags'] = "ERROR: API Key Config Failed"; yield item
         return
 
-    # --- Initialize Models ---
-    model_pass1 = None; model_pass2 = None
+    # --- Initialize Model ---
+    current_model = None
+    current_model_name = model_name_pass1 # Use the model name passed for this specific call
+    current_prompt = system_prompt_pass1 # Use the prompt passed for this specific call
+    current_allowed_tags = ALLOWED_TAGS_SET_PASS_2 if enable_second_pass else ALLOWED_TAGS_SET # Choose allowed tags based on pass
+
     try:
-        model_pass1 = genai.GenerativeModel(model_name_pass1, safety_settings=GEMINI_SAFETY_SETTINGS)
-        log_func(f"Pass 1 model '{model_name_pass1}' initialized.", "info")
+        current_model = genai.GenerativeModel(current_model_name, safety_settings=GEMINI_SAFETY_SETTINGS)
+        log_func(f"Pass {current_pass_num} model '{current_model_name}' initialized.", "info")
     except Exception as e:
-        log_func(f"FATAL: Error initializing Pass 1 model '{model_name_pass1}': {e}. Cannot proceed.", "error")
-        for item in input_data: item['Tags'] = f"ERROR: Model Init Failed ({model_name_pass1})"; yield item
+        log_func(f"FATAL: Error initializing Pass {current_pass_num} model '{current_model_name}': {e}. Cannot proceed.", "error")
+        for item in input_data: item['Tags'] = f"ERROR: Model Init Failed ({current_model_name})"; yield item
         return
 
-    if enable_second_pass:
-        if second_pass_model_name and second_pass_prompt:
-            try:
-                model_pass2 = genai.GenerativeModel(second_pass_model_name, safety_settings=GEMINI_SAFETY_SETTINGS)
-                log_func(f"Pass 2 model '{second_pass_model_name}' initialized.", "info")
-            except Exception as e:
-                log_func(f"Error initializing Pass 2 model '{second_pass_model_name}': {e}. Disabling Pass 2.", "error")
-                enable_second_pass = False
-        else:
-            log_func("Pass 2 enabled but model/prompt missing. Disabling Pass 2.", "warning")
-            enable_second_pass = False
-
     # --- Setup for Intermediate Saving ---
-    safe_base_name = sanitize_filename(base_filename) if base_filename else "tagging_output"
-    intermediate_json_p1_path = os.path.join(output_dir, f"{safe_base_name}_pass1_temp.json") if output_dir else None
-    intermediate_json_p2_path = os.path.join(output_dir, f"{safe_base_name}_pass2_temp.json") if output_dir and enable_second_pass else None
-    all_tagged_items_pass1 = []
+    safe_base_name = sanitize_filename(base_filename) if base_filename else f"tagging_pass{current_pass_num}_output"
+    current_intermediate_save_path = os.path.join(output_dir, f"{safe_base_name}_temp.json") if output_dir else None
+    current_step_name = f"tagging_pass{current_pass_num}"
+    all_tagged_items_current_pass = [] # Store results for the CURRENT pass
 
-    # --- Process Passes ---
-    current_pass = 1
-    while current_pass <= (2 if enable_second_pass else 1):
-        log_func(f"--- Starting Tagging Pass {current_pass} ---", "step")
-        items_to_process = input_data if current_pass == 1 else all_tagged_items_pass1
-        current_model = model_pass1 if current_pass == 1 else model_pass2
-        current_prompt = system_prompt_pass1 if current_pass == 1 else second_pass_prompt
-        current_allowed_tags = ALLOWED_TAGS_SET if current_pass == 1 else ALLOWED_TAGS_SET_PASS_2
-        current_intermediate_save_path = intermediate_json_p1_path if current_pass == 1 else intermediate_json_p2_path
-        current_step_name = f"tagging_pass{current_pass}"
-        all_tagged_items_current_pass = []
-        processed_items_count = 0 # Reset count for each pass
+    # --- Process Batches for Current Pass ---
+    for i in range(0, total_items, batch_size):
+        batch_start_time = time.time()
+        batch_num = i // batch_size + 1
+        current_batch_items = input_data[i : min(i + batch_size, total_items)] # Slice the input data directly
+        actual_batch_size = len(current_batch_items)
+        log_func(f"Pass {current_pass_num} - Processing Batch {batch_num}/{total_batches} ({actual_batch_size} items)...", "debug")
 
-        # --- Process Batches for Current Pass ---
-        for i in range(0, total_items, batch_size):
-            batch_start_time = time.time()
-            batch_num = i // batch_size + 1
-            current_batch_items = items_to_process[i : min(i + batch_size, total_items)]
-            actual_batch_size = len(current_batch_items)
-            log_func(f"Pass {current_pass} - Processing Batch {batch_num}/{total_batches} ({actual_batch_size} items)...", "debug")
+        # --- Format Batch for Prompt ---
+        batch_prompt_lines = []
+        for idx, item_dict in enumerate(current_batch_items):
+            q_text = item_dict.get("question_text", item_dict.get("Question", ""))
+            a_text = item_dict.get("answer_text", item_dict.get("Answer", ""))
+            prompt_line = f"[{idx + 1}] Q: {q_text} A: {a_text}"
+            # Only add initial tags to prompt if it's Pass 2 (merging enabled)
+            if enable_second_pass: # Check the flag passed to the function
+                initial_tags = item_dict.get("Tags", "") # Get tags from Pass 1 input item
+                if initial_tags and not initial_tags.startswith("ERROR:"):
+                    prompt_line += f" Initial Tags: {initial_tags}"
+            batch_prompt_lines.append(prompt_line)
 
-            # --- Format Batch for Prompt ---
-            batch_prompt_lines = []
-            for idx, item_dict in enumerate(current_batch_items):
-                q_text = item_dict.get("question_text", item_dict.get("Question", ""))
-                a_text = item_dict.get("answer_text", item_dict.get("Answer", ""))
-                prompt_line = f"[{idx + 1}] Q: {q_text} A: {a_text}"
-                if current_pass == 2:
-                    initial_tags = item_dict.get("Tags", "")
-                    if initial_tags and not initial_tags.startswith("ERROR:"): # Only include non-error tags
-                        prompt_line += f" Initial Tags: {initial_tags}"
-                batch_prompt_lines.append(prompt_line)
+        batch_prompt_content = "\n".join(batch_prompt_lines)
+        full_prompt = f"{current_prompt}\n\n{batch_prompt_content}"
 
-            batch_prompt_content = "\n".join(batch_prompt_lines)
-            full_prompt = f"{current_prompt}\n\n{batch_prompt_content}"
+        # --- Call Gemini ---
+        response_text = f"ERROR: API Call Failed (Batch {batch_num})" # Default error
+        try:
+            api_start_time = time.time()
+            response = current_model.generate_content(full_prompt)
+            api_duration = time.time() - api_start_time
+            log_func(f"Pass {current_pass_num} - Batch {batch_num} API call duration: {api_duration:.2f}s", "debug")
 
-            # --- Call Gemini ---
-            response_text = f"ERROR: API Call Failed (Batch {batch_num})" # Default error for whole batch
-            try:
-                api_start_time = time.time()
-                response = current_model.generate_content(full_prompt)
-                api_duration = time.time() - api_start_time
-                log_func(f"Pass {current_pass} - Batch {batch_num} API call duration: {api_duration:.2f}s", "debug")
+            block_reason, finish_reason_val = None, None
+            try: # Safe access to safety feedback
+                block_reason_enum = getattr(genai.types, "BlockReason", None)
+                block_reason_unspecified = getattr(block_reason_enum, "BLOCK_REASON_UNSPECIFIED", 0) if block_reason_enum else 0
+                if response.prompt_feedback: block_reason = response.prompt_feedback.block_reason
+                if block_reason == block_reason_unspecified: block_reason = None
+                finish_reason_enum = getattr(genai.types, "FinishReason", None)
+                finish_reason_safety = getattr(finish_reason_enum, "SAFETY", 3) if finish_reason_enum else 3
+                if response.candidates: finish_reason_val = response.candidates[0].finish_reason
+            except Exception as e: log_func(f"Minor error accessing safety info (Batch {batch_num}, Pass {current_pass_num}): {e}", "debug")
 
-                block_reason, finish_reason_val = None, None
-                try: # Safe access to safety feedback
-                    block_reason_enum = getattr(genai.types, "BlockReason", None)
-                    block_reason_unspecified = getattr(block_reason_enum, "BLOCK_REASON_UNSPECIFIED", 0) if block_reason_enum else 0
-                    if response.prompt_feedback: block_reason = response.prompt_feedback.block_reason
-                    if block_reason == block_reason_unspecified: block_reason = None
-                    finish_reason_enum = getattr(genai.types, "FinishReason", None)
-                    finish_reason_safety = getattr(finish_reason_enum, "SAFETY", 3) if finish_reason_enum else 3
-                    if response.candidates: finish_reason_val = response.candidates[0].finish_reason
-                except Exception as e: log_func(f"Minor error accessing safety info (Batch {batch_num}, Pass {current_pass}): {e}", "debug")
-
-                if block_reason:
-                    error_msg = f"Pass {current_pass} - Batch {batch_num} blocked. Reason: {block_reason}"
-                    log_func(error_msg, "error")
-                    response_text = "\n".join([f"[{n+1}] ERROR: Blocked by API ({block_reason})" for n in range(actual_batch_size)])
+            if block_reason:
+                error_msg = f"Pass {current_pass_num} - Batch {batch_num} blocked. Reason: {block_reason}"
+                log_func(error_msg, "error")
+                response_text = "\n".join([f"[{n+1}] ERROR: Blocked by API ({block_reason})" for n in range(actual_batch_size)])
+            else:
+                if hasattr(response, 'text'):
+                    response_text = response.text
                 else:
-                    # Ensure response.text exists before accessing
-                    if hasattr(response, 'text'):
-                        response_text = response.text
-                    else:
-                        # Handle cases where response might be empty or lack text (e.g., some blocks)
-                        log_func(f"Warning: Response for Pass {current_pass} - Batch {batch_num} has no 'text' attribute. Response: {response}", "warning")
-                        response_text = "\n".join([f"[{n+1}] ERROR: No Text in API Response" for n in range(actual_batch_size)])
+                    log_func(f"Warning: Response for Pass {current_pass_num} - Batch {batch_num} has no 'text' attribute. Response: {response}", "warning")
+                    response_text = "\n".join([f"[{n+1}] ERROR: No Text in API Response" for n in range(actual_batch_size)])
 
+        except google.api_core.exceptions.GoogleAPIError as api_e:
+            log_func(f"API Error (Pass {current_pass_num}, Batch {batch_num}): {api_e}", "error")
+            response_text = "\n".join([f"[{n+1}] ERROR: API Call Failed ({type(api_e).__name__})" for n in range(actual_batch_size)])
+        except Exception as e:
+            log_func(f"Unexpected Error during API call (Pass {current_pass_num}, Batch {batch_num}): {e}\n{traceback.format_exc()}", "error")
+            response_text = "\n".join([f"[{n+1}] ERROR: Unexpected API Call Failure" for n in range(actual_batch_size)])
 
-            except google.api_core.exceptions.GoogleAPIError as api_e:
-                log_func(f"API Error (Pass {current_pass}, Batch {batch_num}): {api_e}", "error")
-                response_text = "\n".join([f"[{n+1}] ERROR: API Call Failed ({type(api_e).__name__})" for n in range(actual_batch_size)])
-            except Exception as e:
-                log_func(f"Unexpected Error during API call (Pass {current_pass}, Batch {batch_num}): {e}\n{traceback.format_exc()}", "error")
-                response_text = "\n".join([f"[{n+1}] ERROR: Unexpected API Call Failure" for n in range(actual_batch_size)])
+        # --- Parse Response and Update Items ---
+        # Use the allowed tags specific to this pass for filtering
+        parsed_tags_list = parse_batch_tag_response(response_text, actual_batch_size, current_allowed_tags)
 
-            # --- Parse Response and Update Items ---
-            parsed_tags_list = parse_batch_tag_response(response_text, actual_batch_size, current_allowed_tags)
+        for idx, item_dict in enumerate(current_batch_items):
+            # Make a copy to store results for this pass
+            current_item_copy = item_dict.copy()
+            # These are the new tags suggested by the LLM for *this* pass, already filtered
+            new_tags_string_this_pass = parsed_tags_list[idx]
 
-            for idx, item_dict in enumerate(current_batch_items):
-                # Make a copy to store results for this pass without modifying input for next pass (if applicable)
-                current_item_copy = item_dict.copy()
-                current_item_copy['Tags'] = parsed_tags_list[idx]
-                all_tagged_items_current_pass.append(current_item_copy)
-                processed_items_count += 1
+            # --- Modified Merge Logic ---
+            if enable_second_pass: # If this function call is for Pass 2
+                # Get tags from the input item (which should be Pass 1 results)
+                existing_tags_string = item_dict.get('Tags', '')
 
-                # --- Update Progress ---
-                # *** ADDED PROGRESS CALLBACK CALL HERE ***
-                if progress_callback:
-                    # Call the callback function provided by the UI, passing the processed count and total
-                    progress_callback(processed_items_count, total_items) # Pass processed count and total
+                # Split into sets, handling potential errors and empty strings
+                set_existing = set(tag for tag in existing_tags_string.split() if tag and not tag.startswith("ERROR:"))
+                set_new_this_pass = set(tag for tag in new_tags_string_this_pass.split() if tag and not tag.startswith("ERROR:"))
 
-            # --- Intermediate Save ---
-            if current_intermediate_save_path:
-                save_json_incrementally(all_tagged_items_current_pass, output_dir, safe_base_name, current_step_name, log_func)
+                # Perform the union
+                merged_valid_set = set_existing.union(set_new_this_pass)
+                merged_valid_tags = " ".join(sorted(list(merged_valid_set)))
 
-            batch_end_time = time.time()
-            log_func(f"Pass {current_pass} - Batch {batch_num} finished. Time: {batch_end_time - batch_start_time:.2f}s", "debug")
+                # Preserve/Combine any error tags from both sources
+                error_tags_existing = " ".join(tag for tag in existing_tags_string.split() if tag.startswith("ERROR:"))
+                error_tags_new = " ".join(tag for tag in new_tags_string_this_pass.split() if tag.startswith("ERROR:"))
+                # Combine unique error tags
+                all_error_tags_set = set(error_tags_existing.split()) | set(error_tags_new.split())
+                all_errors = " ".join(sorted(list(all_error_tags_set)))
 
-            # --- Delay ---
-            if batch_num < total_batches and api_delay > 0:
-                log_func(f"Waiting {api_delay:.1f}s...", "debug")
-                time.sleep(api_delay)
-        # --- End of Batch Loop for Current Pass ---
+                # Combine valid merged tags and error tags
+                final_tags = f"{merged_valid_tags} {all_errors}".strip()
+                current_item_copy['Tags'] = final_tags # Assign MERGED tags
 
-        # Prepare for next pass or finish
-        if current_pass == 1:
-            all_tagged_items_pass1 = all_tagged_items_current_pass # Store results for Pass 2 input
-            if not enable_second_pass: break # Exit loop if only one pass
-        # Increment pass counter only after finishing the loop for the current pass
-        current_pass += 1
-        # *** End of While Loop for Passes ***
+            else: # This function call is for Pass 1
+                # Just assign the new (filtered) tags for this pass
+                current_item_copy['Tags'] = new_tags_string_this_pass
+            # --- End Modified Merge Logic ---
+
+            all_tagged_items_current_pass.append(current_item_copy)
+            processed_items_count += 1
+
+            # --- Update Progress ---
+            if progress_callback:
+                # Progress calculation should be handled by the caller (_wf_gemini_tag_json)
+                # based on which pass this is. Here, just report items processed.
+                # We can pass the pass number back if needed, or rely on caller context.
+                progress_callback(processed_items_count, total_items) # Simple progress for now
+
+        # --- Intermediate Save ---
+        if current_intermediate_save_path:
+            # Save the results accumulated *so far* in this pass
+            save_json_incrementally(all_tagged_items_current_pass, output_dir, safe_base_name, current_step_name, log_func)
+
+        batch_end_time = time.time()
+        log_func(f"Pass {current_pass_num} - Batch {batch_num} finished. Time: {batch_end_time - batch_start_time:.2f}s", "debug")
+
+        # --- Delay ---
+        if batch_num < total_batches and api_delay > 0:
+            log_func(f"Waiting {api_delay:.1f}s...", "debug")
+            time.sleep(api_delay)
+    # --- End of Batch Loop ---
 
     # --- Yield Final Results ---
-    final_results = all_tagged_items_current_pass # Results from the last completed pass
-    log_func(f"Tagging complete. Yielding {len(final_results)} items.", "info")
-    for tagged_item in final_results:
+    log_func(f"Tagging Pass {current_pass_num} complete. Yielding {len(all_tagged_items_current_pass)} items.", "info")
+    for tagged_item in all_tagged_items_current_pass:
         yield tagged_item
 
 
 # --- Cleanup Function ---
+# ... (cleanup_gemini_file function remains unchanged) ...
 def cleanup_gemini_file(file_name_uri, api_key, log_func):
     """Deletes an uploaded file from Gemini."""
     if not file_name_uri:

@@ -180,7 +180,11 @@ For each question you will determine
 
 #Core::When:: Time period as applicable from the list
 
-#Subject:: Main subject of the question from the provided list.
+#Subject(1):: Main subject of the question from the provided list.
+
+#Subject(2):: Secondary subject of the question from the provided list.
+
+#Subject(3):: Tertiary subject of the question from the provided list.
 
 #Modifiers::Related-To:: What concept or entity or aspect it is related to, even tangentially
 
@@ -211,7 +215,7 @@ Reference Document: These categories include and are limited to the following, s
 #Core::QLevel::Open-Quizzing-Or-Niche-Knowledge-Level
 }
 {
-#Core::Where::UnclearRegion
+#Core::Where::Could-Be-Anywhere
 #Core::Where::MultipleRegions
 #Core::Where::NorthAmericaExceptUSA
 #Core::Where::Caribbean
@@ -227,6 +231,7 @@ Reference Document: These categories include and are limited to the following, s
 #Core::Where::India
 #Core::Where::Oceania
 #Core::Where::AustraliaNewZealand
+#Core::Where::Could-Not-Locate
 }
 {
 #Core::When::Evergreen
@@ -373,7 +378,8 @@ Reference Document: These categories include and are limited to the following, s
 #Subject::Games::Card-Games
 #Subject::Games::Traditional-Games
 #Subject::Games::Video-Games-And-e-Sport
-
+}
+{
 #Subject::Law
 #Subject::Law::Legal-System-And-Systems
 #Subject::Law::Cases-And-Trials
@@ -588,8 +594,8 @@ This tag applies when the question involves knowledge often encountered during h
 **#Core::QLevel::Open-Quizzing-Or-Niche-Knowledge-Level**
 This tag applies when the question delves into specialized, obscure, or highly specific topics typically found in competitive open quizzes or pertaining to niche interests. Answering requires deep knowledge in a particular field or familiarity with less common trivia. Examples: "What specific enzyme is targeted by the drug Sildenafil?", "In particle physics, what are the six 'flavors' of quarks?".
 
-**#Core::Where::UnclearRegion**
-This tag applies when the question's subject matter cannot be reasonably tied to a specific geographical region or continent based on the information provided. The topic might be global, abstract, or lack geographical context. Examples: questions about universal scientific principles, abstract concepts, or fictional settings without real-world parallels.
+#Core::Where::Could-Be-Anywhere**
+This tag applies when the question does not specify a particular location or context, making it applicable to any place or situation. It indicates that the information could be relevant in various geographical or situational contexts. For example, "What is the capital city of a country?" or "What is the most common language spoken in the world?" or "Why do people sing in the shower?". Also, This tag applies when the question is about or mentions an aspect or entity that cannot be clearly associated with any specific geographical location or region. This could include abstract concepts, universal phenomena, or questions that are too vague to determine a location. For example, "What is the meaning of life?" or "What is the color of happiness?".
 
 **#Core::Where::MultipleRegions**
 This tag applies when the question explicitly involves or spans multiple distinct geographical regions or continents as defined in the other 'Where' categories. For example, a question about trade routes between Europe and Asia, or comparing phenomena across North America and Africa.
@@ -629,6 +635,15 @@ This tag applies when the question is about or mentions an aspect or entity rela
 
 **#Core::Where::India**
 This tag applies when the question is specifically about or mentions an aspect or entity related to the Republic of India. This includes Indian history (post-independence or specifically Indian empires), geography within India, Bollywood cinema, Indian cuisine, specific cultural practices, or political figures unique to India.
+
+**#Core::Where::Oceania**
+This tag applies when the question is about or mentions an aspect or entity related to the region of Oceania, which includes Australia, New Zealand, and the Pacific Islands. Examples include questions about Australian wildlife, Maori culture in New Zealand, or the geography of the Pacific Islands.
+
+**#Core::Where::AustraliaNewZealand**
+This tag applies when the question is specifically about or mentions an aspect or entity related to Australia and New Zealand. This includes Australian or New Zealand's  history, geography, culture, or any other aspect. For example, "What is the capital of Australia?" or "Which indigenous people are native to New Zealand?".
+
+**#Core::Where::Could-Not-Locate**
+This tag applies when the model is *not* able to determine a specific location or region for the question. This could be due to vagueness, lack of context, or the question being too abstract to associate with a geographical area. This tag is used when the question does not clearly fit into any of the other geographical categories. 
 
 **#Core::When::Evergreen**
 This tag applies when the question's subject matter is timeless or not bound to a specific historical period. This often includes scientific laws, mathematical concepts, philosophical ideas, definitions, or facts that remain constant. For example, "What is the boiling point of water at sea level?" or "What is the definition of 'democracy'?".
