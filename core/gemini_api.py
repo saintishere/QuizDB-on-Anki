@@ -8,6 +8,8 @@ import traceback
 import os
 from tkinter import messagebox
 import math
+from typing import Optional, List  # Removed List, kept Optional
+from pydantic import BaseModel, Field, ValidationError # Added Pydantic
 
 # Use relative imports ONLY
 from ..constants import GEMINI_SAFETY_SETTINGS
@@ -61,10 +63,27 @@ if not ALLOWED_TAGS_SET:
 if not ALLOWED_TAGS_SET_PASS_2:
      print("WARNING: ALLOWED_TAGS_SET_PASS_2 is empty or using fallback after initial load!")
      if not ALLOWED_TAGS_SET: # If Pass 1 also failed, this is critical
-          print("CRITICAL WARNING: Both Pass 1 and Pass 2 tag sets are empty!")
+         print("CRITICAL WARNING: Both Pass 1 and Pass 2 tag sets are empty!") # Indent this print
 
 
-# --- Configuration ---
+# --- Pydantic Models for Structured Output ---
+
+class VisualExtractionItem(BaseModel):
+    """Pydantic model for the expected structure from VISUAL_EXTRACTION prompt."""
+    question_page: int = Field(..., description="Page number where the main question text STARTS")
+    question_text: str = Field(..., description="FULL question text, consolidated (newlines replaced with spaces, prefixes removed)")
+    relevant_question_image_pages: list[int] = Field(..., description="Array of page numbers containing images relevant ONLY to the QUESTION.")
+    answer_page: int = Field(..., description="Page number where the main answer text or primary answer visual STARTS, skipping buffer slides.")
+    answer_text: str = Field(..., description="FULL answer text, consolidated (newlines replaced with spaces, prefixes removed)")
+    relevant_answer_image_pages: list[int] = Field(..., description="Array of page numbers containing images relevant ONLY to the ANSWER.")
+
+class BookProcessingItem(BaseModel):
+    """Pydantic model for the expected structure from BOOK_PROCESSING prompt."""
+    source_page_approx: int = Field(..., description="Approximate page number where this Q&A pair is found.")
+    question: str = Field(..., description="The FULL, VERBATIM question text extracted directly.")
+    answer: str = Field(..., description="The FULL, VERBATIM answer text extracted directly.")
+
+# --- Configuration --- # Ensure this starts at the top level
 try:
     genai.configure(api_key=os.environ.get("GOOGLE_API_KEY", "dummy_key_placeholder"))
 except Exception as e:
@@ -162,21 +181,23 @@ def save_json_incrementally(data_list, output_dir, base_filename, step_name, log
     temp_filename = f"{base_filename}_{step_name}_temp_results.json"
     temp_filepath = os.path.join(output_dir, temp_filename)
     try:
+        # Ensure data_list contains dictionaries, not Pydantic models, before saving
+        dict_list = [item.model_dump() if isinstance(item, BaseModel) else item for item in data_list]
         with open(temp_filepath, 'w', encoding='utf-8') as f:
-            json.dump(data_list, f, indent=2)
-        log_func(f"Saved intermediate {step_name} results ({len(data_list)} items) to {temp_filename}", "debug")
+            json.dump(dict_list, f, indent=2)
+        log_func(f"Saved intermediate {step_name} results ({len(dict_list)} items) to {temp_filename}", "debug")
         return temp_filepath
     except Exception as e:
         log_func(f"Error saving intermediate {step_name} results to {temp_filepath}: {e}", "error")
         return None
 
 
-# --- Visual Extraction ---
+# --- Visual Extraction (Refactored for Structured Output) ---
 def call_gemini_visual_extraction(
     pdf_path, api_key, model_name, prompt_text, log_func, parent_widget=None
 ):
-    """Calls Gemini with PDF expecting JSON output. Returns (list_of_parsed_objects, uploaded_file_uri) or (None, uri)."""
-    log_func("Calling Gemini for Visual JSON extraction...", "info")
+    """Calls Gemini with PDF expecting structured JSON output based on a dictionary schema."""
+    log_func("Calling Gemini for Visual JSON extraction (Structured Output - Dict Schema)...", "info")
     if not configure_gemini(api_key):
         error_msg = "Failed to configure Gemini API key"
         if parent_widget: messagebox.showerror("API Error", error_msg, parent=parent_widget)
@@ -185,12 +206,42 @@ def call_gemini_visual_extraction(
 
     uploaded_file = None
     uploaded_file_uri = None
-    all_parsed_objects = None
+    all_parsed_objects = None # This will store list of dicts
     block_reason = None
     temp_save_path = None
     output_dir = os.path.dirname(pdf_path) or os.getcwd()
     safe_base_name = sanitize_filename(os.path.basename(pdf_path))
-    generation_config = genai.GenerationConfig(response_mime_type="application/json")
+
+    # Define the schema as a dictionary based on OpenAPI subset
+    visual_extraction_schema_dict = {
+        "type": "ARRAY",
+        "items": {
+            "type": "OBJECT",
+            "properties": {
+                "question_page": {"type": "INTEGER"},
+                "question_text": {"type": "STRING"},
+                "relevant_question_image_pages": {
+                    "type": "ARRAY",
+                    "items": {"type": "INTEGER"}
+                },
+                "answer_page": {"type": "INTEGER"},
+                "answer_text": {"type": "STRING"},
+                "relevant_answer_image_pages": {
+                    "type": "ARRAY",
+                    "items": {"type": "INTEGER"}
+                }
+            },
+            "required": [
+                "question_page", "question_text", "relevant_question_image_pages",
+                "answer_page", "answer_text", "relevant_answer_image_pages"
+            ]
+        }
+    }
+
+    generation_config_dict = {
+        'response_mime_type': 'application/json',
+        'response_schema': visual_extraction_schema_dict
+    }
 
     try:
         log_func(f"Uploading PDF '{os.path.basename(pdf_path)}'...", "upload")
@@ -201,57 +252,93 @@ def call_gemini_visual_extraction(
         upload_duration = time.time() - upload_start_time
         log_func(f"PDF uploaded ({upload_duration:.1f}s). URI: {uploaded_file_uri}", "info")
 
-        model = genai.GenerativeModel(model_name, safety_settings=GEMINI_SAFETY_SETTINGS, generation_config=generation_config)
-        log_func(f"Sending JSON extraction request to Gemini ({model_name})...", "info")
+        # Initialize model WITHOUT generation config
+        model = genai.GenerativeModel(model_name, safety_settings=GEMINI_SAFETY_SETTINGS)
+
+        log_func(f"Sending JSON extraction request to Gemini ({model_name}) with dictionary schema...", "info")
         api_start_time = time.time()
-        response = model.generate_content([prompt_text, uploaded_file])
+        
+        # Pass the generation_config_dict directly to generate_content
+        response = model.generate_content(
+            [prompt_text, uploaded_file],
+            generation_config=generation_config_dict
+        )
         api_duration = time.time() - api_start_time
         log_func(f"Received response from Gemini ({api_duration:.1f}s).", "info")
 
-        json_string = None
+        # --- Refactored Response Handling ---
         try:
-            json_string = response.text
-            log_func(f"Parsing JSON response (len {len(json_string) if json_string else 0})...", "debug")
-            if json_string:
-                try:
-                    parsed_data = json.loads(json_string)
-                    if isinstance(parsed_data, list):
-                        all_parsed_objects = parsed_data
-                        log_func(f"Parsed JSON response ({len(all_parsed_objects)} items).", "info")
-                        temp_save_path = save_json_incrementally(all_parsed_objects, output_dir, safe_base_name, "visual_extract", log_func)
-                    else:
-                        log_func("Parsing Error: Parsed JSON is not a list.", "error")
-                        all_parsed_objects = None
-                except json.JSONDecodeError as e:
-                    log_func(f"Initial JSON parsing failed: {e}. Raw snippet:\n{json_string[:1000]}", "error")
-                    cleaned_json_string = re.sub(r"^```json\s*", "", json_string.strip(), flags=re.IGNORECASE)
-                    cleaned_json_string = re.sub(r"\s*```$", "", cleaned_json_string)
-                    if cleaned_json_string != json_string:
-                        log_func("Retrying parse after stripping markdown...", "warning")
-                        try:
-                            parsed_data = json.loads(cleaned_json_string)
-                            if isinstance(parsed_data, list):
-                                all_parsed_objects = parsed_data
-                                log_func(f"Parsed after stripping ({len(all_parsed_objects)} items).", "info")
+            # Attempt to use response.parsed first (SDK tries to parse based on schema)
+            if hasattr(response, 'parsed') and response.parsed is not None:
+                log_func("Attempting to use response.parsed...", "debug")
+                parsed_list = response.parsed
+                if isinstance(parsed_list, list):
+                    # Convert Pydantic models back to dictionaries
+                    all_parsed_objects = [item.model_dump() for item in parsed_list if isinstance(item, VisualExtractionItem)]
+                    log_func(f"Successfully used response.parsed ({len(all_parsed_objects)} items).", "info")
+                    temp_save_path = save_json_incrementally(all_parsed_objects, output_dir, safe_base_name, "visual_extract", log_func)
+                else:
+                    log_func("Warning: response.parsed was not None, but not a list as expected.", "warning")
+                    all_parsed_objects = None # Fallback to text parsing
+
+            # Fallback to parsing response.text if .parsed didn't work or wasn't available
+            if all_parsed_objects is None and hasattr(response, 'text'):
+                json_string = response.text
+                log_func(f"Falling back to parsing response.text (len {len(json_string) if json_string else 0})...", "debug")
+                if json_string:
+                    try:
+                        parsed_data = json.loads(json_string)
+                    except json.JSONDecodeError as e:
+                        log_func(f"Direct JSON parsing failed: {e}. Trying to strip markdown...", "warning")
+                        cleaned_json_string = re.sub(r"^```json\s*", "", json_string.strip(), flags=re.IGNORECASE)
+                        cleaned_json_string = re.sub(r"\s*```$", "", cleaned_json_string)
+                        if cleaned_json_string != json_string:
+                            try:
+                                parsed_data = json.loads(cleaned_json_string)
+                                log_func("Parsing successful after stripping markdown.", "info")
+                            except json.JSONDecodeError as e2:
+                                log_func(f"Parsing failed even after stripping: {e2}", "error")
+                                parsed_data = None
+
+                    # Validate the structure if parsing succeeded
+                    if parsed_data is not None:
+                        if isinstance(parsed_data, list):
+                            validated_items = []
+                            for i, item_data in enumerate(parsed_data):
+                                try:
+                                    validated_model = VisualExtractionItem(**item_data)
+                                    validated_items.append(validated_model.model_dump())
+                                except ValidationError as val_err:
+                                    log_func(f"Validation Error for item {i}: {val_err}. Skipping item.", "warning")
+                                except Exception as item_err:
+                                     log_func(f"Error processing item {i}: {item_err}. Skipping item.", "warning")
+
+                            if validated_items:
+                                all_parsed_objects = validated_items
+                                log_func(f"Validated JSON from response.text ({len(all_parsed_objects)} items).", "info")
                                 temp_save_path = save_json_incrementally(all_parsed_objects, output_dir, safe_base_name, "visual_extract", log_func)
                             else:
-                                log_func("Parsing Error: Stripped JSON not a list.", "error")
-                                all_parsed_objects = None
-                        except json.JSONDecodeError as e2:
-                            log_func(f"Parsing failed even after stripping: {e2}", "error")
+                                log_func("No valid items found after validating parsed JSON.", "warning")
+                                all_parsed_objects = []
+                        else:
+                            log_func("Parsing Error: Parsed JSON from text is not a list.", "error")
                             all_parsed_objects = None
                     else:
-                        all_parsed_objects = None
-            else:
-                log_func("Warning: Received empty response text from Gemini.", "warning")
-                all_parsed_objects = []
+                         all_parsed_objects = None
+                else:
+                    log_func("Warning: Received empty response text from Gemini.", "warning")
+                    all_parsed_objects = []
 
-        except AttributeError:
-            log_func("Parsing Error: Could not access response text (request likely blocked?).", "error")
+            # Handle case where neither .parsed nor .text worked
+            elif all_parsed_objects is None:
+                 log_func("Error: Could not get structured data from response.parsed or response.text.", "error")
+
+        except AttributeError as attr_err:
+            log_func(f"Parsing Error: Attribute error accessing response parts ({attr_err}). Request likely blocked or malformed response.", "error")
             log_func(f"Full Response Object: {response}", "debug")
             all_parsed_objects = None
         except Exception as e:
-            log_func(f"Unexpected error processing response text: {e}\n{traceback.format_exc()}", "error")
+            log_func(f"Unexpected error processing response: {e}\n{traceback.format_exc()}", "error")
             all_parsed_objects = None
 
         # --- Check for Safety Blocks ---
@@ -312,15 +399,13 @@ def call_gemini_visual_extraction(
         log_func(f"FATAL API ERROR (Visual): {error_message}\n{traceback.format_exc()}", "error")
         if parent_widget: messagebox.showerror("Unexpected Error", error_message, parent=parent_widget)
         return None, uploaded_file_uri
-
-
-# --- Text Analysis ---
+# --- Text Analysis (Refactored for Structured Output) ---
 def call_gemini_text_analysis(
     text_content, api_key, model_name, prompt, log_func,
     output_dir, base_filename, chunk_size=30000, api_delay=5.0, parent_widget=None
 ):
-    """Calls Gemini with text content in chunks. Saves results incrementally. Returns list or None."""
-    log_func(f"Processing text with Gemini ({model_name}) in chunks...", "info")
+    """Calls Gemini with text content in chunks expecting structured JSON output based on BookProcessingItem schema."""
+    log_func(f"Processing text with Gemini ({model_name}) in chunks (Structured Output)...", "info")
     if not configure_gemini(api_key):
         error_msg = "Failed to configure Gemini API key"; log_func(f"API Error: {error_msg}", "error")
         if parent_widget: messagebox.showerror("API Error", error_msg, parent=parent_widget)
@@ -338,9 +423,14 @@ def call_gemini_text_analysis(
     finish_reason_enum = getattr(genai.types, "FinishReason", None)
     finish_reason_safety = getattr(finish_reason_enum, "SAFETY", 3) if finish_reason_enum else 3
     finish_reason_stop = getattr(finish_reason_enum, "STOP", 1) if finish_reason_enum else 1
-    generation_config = genai.GenerationConfig(response_mime_type="application/json")
+    # --- Use Pydantic schema in generation_config ---
+    generation_config = genai.GenerationConfig(
+        response_mime_type="application/json",
+        response_schema=List[BookProcessingItem] # Use the Pydantic model
+    )
 
     try:
+        # Pass the config during model initialization
         model = genai.GenerativeModel(model_name, safety_settings=GEMINI_SAFETY_SETTINGS, generation_config=generation_config)
     except Exception as model_e:
          error_msg = f"Failed to initialize Gemini model '{model_name}': {model_e}"; log_func(error_msg, "error")
@@ -355,20 +445,20 @@ def call_gemini_text_analysis(
         if not chunk_text.strip(): log_func(f"Skipping empty chunk {chunk_num}.", "debug"); continue
 
         chunk_parsed_successfully = False
-        try:
+        try: # Outer try block for the entire chunk processing including API call and parsing
+            # Keep prompt simple, schema defines structure
             full_prompt = f"{prompt}\n\n--- Text Chunk ---\n{chunk_text}"
-            log_func(f"Sending chunk {chunk_num} request...", "debug")
+            log_func(f"Sending chunk {chunk_num} request with structured output schema...", "debug")
             api_start_time = time.time()
-            response = model.generate_content(full_prompt)
+            # Pass config to generate_content (redundant if set on model, but safe)
+            response = model.generate_content(full_prompt, generation_config=generation_config)
             api_duration = time.time() - api_start_time
             log_func(f"Received response chunk {chunk_num} ({api_duration:.1f}s).", "debug")
 
-            raw_response_text = ""; block_reason = None; finish_reason_val = None
-            try:
-                if hasattr(response, "text"): raw_response_text = response.text.strip()
-                elif hasattr(response, "parts") and response.parts: raw_response_text = "".join(part.text for part in response.parts if hasattr(part, "text")).strip()
-            except Exception as e: log_func(f"Could not extract text (chunk {chunk_num}): {e}", "warning")
+            # --- Refactored Response Handling ---
+            block_reason = None; finish_reason_val = None; chunk_items_list = None
 
+            # Check safety feedback first
             try:
                 if response.prompt_feedback: block_reason = response.prompt_feedback.block_reason
                 if block_reason == block_reason_unspecified: block_reason = None
@@ -379,48 +469,108 @@ def call_gemini_text_analysis(
 
             if block_reason:
                 all_blocked = finish_reason_val == finish_reason_safety; error_msg = f"Chunk {chunk_num} blocked. Reason: {block_reason}"
-                if all_blocked: log_func(error_msg, level="error"); continue
-                else: log_func(f"Chunk {chunk_num} block '{block_reason}', finish '{finish_reason_val}'. Proceeding.", "warning")
+                if all_blocked: log_func(error_msg, level="error"); continue # Skip this chunk
+                else: log_func(f"Chunk {chunk_num} safety block '{block_reason}', finish '{finish_reason_val}'. Proceeding.", "warning")
 
-            parsed_chunk_data = None
-            if raw_response_text:
-                try:
-                    cleaned_json_string = re.sub(r"^```json\s*", "", raw_response_text, flags=re.IGNORECASE)
-                    cleaned_json_string = re.sub(r"\s*```$", "", cleaned_json_string)
-                    if not cleaned_json_string: log_func(f"Warning: Cleaned response chunk {chunk_num} empty.", "warning")
+            # Attempt to parse structured output only if not blocked
+            if not block_reason:
+                try: # Inner try for parsing/validation
+                    # Try response.parsed first
+                    if hasattr(response, 'parsed') and response.parsed is not None:
+                        log_func(f"Attempting to use response.parsed for chunk {chunk_num}...", "debug")
+                        parsed_list = response.parsed
+                        if isinstance(parsed_list, list):
+                            # Convert Pydantic models back to dictionaries
+                            chunk_items_list = [item.model_dump() for item in parsed_list if isinstance(item, BookProcessingItem)]
+                            log_func(f"Successfully used response.parsed ({len(chunk_items_list)} items) for chunk {chunk_num}.", "info")
+                        else:
+                            log_func(f"Warning: response.parsed (chunk {chunk_num}) was not None, but not a list.", "warning")
+                            chunk_items_list = None # Fallback
+
+                    # Fallback to response.text if .parsed failed or wasn't available
+                    if chunk_items_list is None and hasattr(response, 'text'):
+                        raw_response_text = response.text.strip()
+                        log_func(f"Falling back to parsing response.text for chunk {chunk_num} (len {len(raw_response_text)})...", "debug")
+                        if raw_response_text:
+                            try:
+                                parsed_data = json.loads(raw_response_text)
+                            except json.JSONDecodeError:
+                                # Try stripping markdown
+                                cleaned_json_string = re.sub(r"^```json\s*", "", raw_response_text, flags=re.IGNORECASE)
+                                cleaned_json_string = re.sub(r"\s*```$", "", cleaned_json_string)
+                                if cleaned_json_string != raw_response_text:
+                                    try:
+                                        parsed_data = json.loads(cleaned_json_string)
+                                        log_func("Parsing successful after stripping markdown.", "info")
+                                    except json.JSONDecodeError as e2:
+                                        log_func(f"Parsing Error: Failed JSON decode chunk {chunk_num} even after stripping: {e2}", "error")
+                                        parsed_data = None
+                                else:
+                                    parsed_data = None # Stripping didn't help
+
+                            # Validate structure if parsing succeeded
+                            if parsed_data is not None:
+                                if isinstance(parsed_data, list):
+                                    validated_items = []
+                                    for i_item, item_data in enumerate(parsed_data):
+                                        try:
+                                            validated_model = BookProcessingItem(**item_data)
+                                            validated_items.append(validated_model.model_dump())
+                                        except ValidationError as val_err:
+                                            log_func(f"Validation Error chunk {chunk_num}, item {i_item}: {val_err}. Skipping.", "warning")
+                                        except Exception as item_err:
+                                            log_func(f"Error processing item {i_item} chunk {chunk_num}: {item_err}. Skipping.", "warning")
+                                    chunk_items_list = validated_items
+                                    log_func(f"Validated JSON from response.text ({len(chunk_items_list)} items) chunk {chunk_num}.", "info")
+                                else:
+                                    log_func(f"Parsing Error: Chunk {chunk_num} JSON from text not list.", "error")
+                                    chunk_items_list = None # Indicate failure
+                            else:
+                                 log_func(f"Parsing Error: Failed JSON decode chunk {chunk_num}.", "error")
+                                 chunk_items_list = None # Indicate failure
+                        else: # Empty raw_response_text
+                             log_func(f"Warning: Empty response text chunk {chunk_num}.", "warning")
+                             chunk_items_list = [] # Treat empty text as empty list
+
+                    # If we successfully got a list (even empty) from either method
+                    if chunk_items_list is not None:
+                        if chunk_items_list: # Only extend if list is not empty
+                            all_parsed_data.extend(chunk_items_list)
+                            chunk_parsed_successfully = True
+                            temp_save_path = save_json_incrementally(all_parsed_data, output_dir, safe_base_name, "text_analysis", log_func)
+                        else:
+                             log_func(f"No valid Q&A items found/parsed for chunk {chunk_num}.", "warning")
+                             chunk_parsed_successfully = True # Consider empty valid response a success for the chunk
                     else:
-                        parsed_chunk_data = json.loads(cleaned_json_string)
-                        if isinstance(parsed_chunk_data, list):
-                            valid_items = [item for item in parsed_chunk_data if isinstance(item, dict) and "question" in item and "answer" in item]
-                            invalid_count = len(parsed_chunk_data) - len(valid_items)
-                            if invalid_count > 0: log_func(f"Skipped {invalid_count} invalid items chunk {chunk_num}.", "warning")
-                            if valid_items:
-                                all_parsed_data.extend(valid_items); chunk_parsed_successfully = True
-                                log_func(f"Parsed {len(valid_items)} valid items chunk {chunk_num}.", "debug")
-                                temp_save_path = save_json_incrementally(all_parsed_data, output_dir, safe_base_name, "text_analysis", log_func)
-                            else: log_func(f"No valid Q&A items chunk {chunk_num}.", "warning")
-                        else: log_func(f"Parsing Error: Chunk {chunk_num} JSON not list.", "error")
-                except json.JSONDecodeError as e: log_func(f"Parsing Error: Failed JSON decode chunk {chunk_num}: {e}", "error"); log_func(f"--- Invalid Raw Response (Chunk {chunk_num}) ---\n{raw_response_text[:1000]}\n---", "debug")
-                except Exception as e: log_func(f"Unexpected error parsing chunk {chunk_num} JSON: {e}", "error")
-            elif not block_reason:
-                log_func(f"Warning: Empty response chunk {chunk_num}.", "warning")
-                candidates_exist = hasattr(response, "candidates") and response.candidates and response.candidates[0] is not None
-                if not candidates_exist or finish_reason_val != finish_reason_stop:
-                     # *** Start of Refactored Section ***
-                     feedback = "N/A" # Default feedback
-                     try:
-                         # Check if prompt_feedback exists and try converting to string
-                         if response.prompt_feedback:
-                             feedback = str(response.prompt_feedback)
-                         # If prompt_feedback is missing or empty, feedback remains "N/A"
-                     except Exception as feedback_e:
-                         # Log error if conversion fails, feedback remains "N/A"
-                         log_func(f"Minor error accessing/converting prompt_feedback for logging (chunk {chunk_num}): {feedback_e}", "debug")
-                     # *** End of Refactored Section ***
+                     log_func(f"Error: Could not parse valid JSON for chunk {chunk_num} from response.", "error")
+                     # chunk_parsed_successfully remains False
+                # --- Add except block for the parsing try ---
+                except Exception as parse_e:
+                    log_func(f"Unexpected error during response parsing/validation for chunk {chunk_num}: {parse_e}", "error")
+                    # chunk_parsed_successfully remains False
+                # --- End of Inner Parsing Try/Except ---
 
-                     log_func(f"Chunk {chunk_num} empty, finish={finish_reason_val}. Feedback: {feedback}. Potential Error.", "error")
+                # Log potential errors if parsing failed and it wasn't a safety block
+                if chunk_items_list is None and not block_reason: # Check after trying both .parsed and .text
+                    log_func(f"Warning: Empty or unparseable response for chunk {chunk_num}, and not blocked.", "warning")
+                    candidates_exist = hasattr(response, "candidates") and response.candidates and response.candidates[0] is not None
+                    # Check finish reason only if candidates exist
+                    finish_reason_ok = True # Assume ok unless proven otherwise
+                    if candidates_exist and hasattr(response.candidates[0], 'finish_reason'):
+                        finish_reason_ok = (response.candidates[0].finish_reason == finish_reason_stop)
 
+                    if not candidates_exist or not finish_reason_ok:
+                         feedback = "N/A" # Default feedback
+                         try:
+                             # Check if prompt_feedback exists and try converting to string
+                             if response.prompt_feedback:
+                                 feedback = str(response.prompt_feedback)
+                         except Exception as feedback_e:
+                             log_func(f"Minor error accessing/converting prompt_feedback for logging (chunk {chunk_num}): {feedback_e}", "debug")
 
+                         log_func(f"Chunk {chunk_num} empty/unparseable, finish={finish_reason_val}. Feedback: {feedback}. Potential Error.", "error")
+
+        # --- Handle API/General Errors for the Chunk (Outer Try) ---
         except google.api_core.exceptions.GoogleAPIError as api_e:
             error_type = type(api_e).__name__; error_message = f"API Error (Chunk {chunk_num}): {error_type}: {api_e}"
             log_func(error_message, level="error")
@@ -480,7 +630,7 @@ def tag_tsv_rows_gemini(
     # Use keys from the first *actual* data item
     first_item_keys = list(input_data[0].keys()) if input_data else []
     output_header = [col for col in priority_cols if col in first_item_keys]
-    remaining_keys = sorted([key for key in first_item_keys if key not in priority_cols and not key.startswith('_')])
+    remaining_keys = sorted([key for key in first_item_keys if not key.startswith('_') and key not in priority_cols])
     output_header.extend(remaining_keys)
     if "Tags" not in output_header:
         output_header.append("Tags")
